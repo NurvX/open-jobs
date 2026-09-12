@@ -35,6 +35,13 @@ def mark_of(key): return os.path.join(a.marks, key.replace("/", "__"))
 stats = {"uploaded": 0, "failed": 0}
 def sync(key, path, ctype):
     if os.path.exists(mark_of(key)) and not a.force: return True
+    size = os.path.getsize(path)
+    if key in REMOTE and REMOTE[key] == size: return True  # already there, same size (a fresh container has no marks)
+    if size == 0:
+        # a LOW_DISK placeholder: the part was uploaded by the stage that built it and the local copy emptied. Never
+        # upload the placeholder (2026-09-12: this would have zeroed today's 40 diff parts in the bucket).
+        if key in REMOTE or r2.head(key): return True
+        print(f"  MISSING {key}: empty local placeholder and nothing in the bucket", flush=True); stats["failed"] += 1; return False
     t0 = time.time(); ok = put(key, path, ctype)
     if ok: open(mark_of(key), "w").close(); stats["uploaded"] += 1; print(f"  {key} ({os.path.getsize(path) / 1e6:.0f} MB, {time.time() - t0:.0f}s)", flush=True)
     else: stats["failed"] += 1
