@@ -114,6 +114,34 @@ def run(cmd, **kw):
         sys.exit(f"stage {a.stage}: `{cmd[1] if len(cmd) > 1 else cmd[0]}` exited {r.returncode}")
 def stamp(msg):
     print(f"=== {a.stage} {a.date}: {msg} ({time.time() - t0:.0f}s)", flush=True); record(True, msg)
+def restore_web():
+    """Outputs of the tree and estimator stages, handed off through tmp/<date>.web/ (the container is the process: a
+    later stage in a fresh container has an empty work dir). Missing files only."""
+    r2 = r2c(); wd = os.path.join(work, "web"); os.makedirs(wd, exist_ok=True); n = 0
+    for k, _, _ in r2.list(f"tmp/{a.date}.web/"):
+        p = os.path.join(wd, k.rsplit("/", 1)[-1])
+        if not os.path.exists(p): r2.get_file(k, p); n += 1
+    if n: print(f"restored {n} web file(s) from tmp/{a.date}.web/", flush=True)
+def restore_diff():
+    """The diff ending today for history/feed/retention: sidecar + lite parts from the bucket, full parts as the empty
+    placeholders the low-disk path leaves anyway."""
+    r2 = r2c(); names = sorted(k[len("diffs/"):-len(".json")] for k, _, _ in r2.list("diffs/") if k.endswith(f"__{a.date}.json") and k.count("/") == 1)
+    if not names: return
+    name = names[-1]; d = os.path.join("export", "diffs", name); side = d + ".json"
+    if os.path.exists(side): return
+    os.makedirs(os.path.join(d, "lite"), exist_ok=True); r2.get_file(f"diffs/{name}.json", side); sd = json.load(open(side))
+    for p in sd.get("parts", []): open(os.path.join(d, p["file"]), "w").close()
+    lite = (sd.get("lite") or {}).get("parts", [])
+    for p in lite: r2.get_file(f"diffs/{name}/lite/{p['file']}", os.path.join(d, "lite", p["file"]))
+    print(f"restored diff {name} from the bucket (sidecar, {len(lite)} lite parts, placeholders for {len(sd.get('parts', []))} full parts)", flush=True)
+def restore_ledger():
+    r2 = r2c(); d = os.path.join("export", "ledger", a.date)
+    if glob.glob(os.path.join(d, "*.parquet")): return
+    ks = [k for k, _, _ in r2.list(f"ledger/{a.date}/") if k.endswith(".parquet")]
+    if not ks: return
+    os.makedirs(d, exist_ok=True)
+    for k in ks: r2.get_file(k, os.path.join(d, k.rsplit("/", 1)[-1]))
+    print(f"restored {len(ks)} ledger part(s) for {a.date} from the bucket", flush=True)
 def r2c():
     sys.path.insert(0, HERE); from r2 import R2; return R2()
 
@@ -151,6 +179,7 @@ elif a.stage == "ledger" and r2_mode:
     cmd = ["uv", "run", "scripts/derive-ledger.py", "--date", a.date, "--export", f"s3://{BUCKET}/exports/{a.date}", "--prev-ledger", f"s3://{BUCKET}/ledger/{ldays[-1]}", "--out", "export/ledger"]
     if xdays and ldays[-1] <= "2026-09-10": cmd += ["--prev-export", f"s3://{BUCKET}/exports/{xdays[-1]}"]  # first derived day: drop never-published rows of the pulled ledger
     run(cmd)
+    for p in sorted(glob.glob(os.path.join("export", "ledger", a.date, "*.parquet"))): r2.put_file(f"ledger/{a.date}/{os.path.basename(p)}", p, "application/octet-stream")  # durable now; the history stage indexes them
 elif a.stage == "ledger":
     raw = os.path.join(work, "ledger-raw"); os.makedirs(raw, exist_ok=True)
     # LOW_DISK (20 GB cloud container): pages land as gzip parts (~2 GB for the whole fleet instead of 14 GB of ndjson,
@@ -255,12 +284,23 @@ elif a.stage == "estimators":
     for s in ("train-salary", "train-arrangement", "train-seniority", "train-age", "build-city-table", "build-location-table"):
         if only_est and s not in only_est: continue
         run(["uv", "run", f"scripts/{s}.py"], env=est_env)
+    if r2_mode:
+        r2 = r2c(); wd = os.path.join(work, "web")
+        for f in sorted(glob.glob(os.path.join(wd, "*.json"))):
+            if os.path.basename(f) != "manifest.json": r2.put_file(f"tmp/{a.date}.web/{os.path.basename(f)}", f, "application/json")  # hand-off to finalize
 elif a.stage == "finalize":
+    if r2_mode: restore_web()
     run(["uv", "run", "scripts/publish-web.py", "--web", os.path.join(work, "web")], env={"GROUPS_PREFIX": GROUPS_PREFIX})
+    if r2_mode:
+        r2 = r2c(); n = 0
+        for pfx in (f"tmp/{a.date}.web/", f"tmp/{a.date}.tree/"):
+            for k, _, _ in r2.list(pfx): r2.delete(k); n += 1
+        print(f"published; removed {n} hand-off object(s) (tmp/{a.date}.web/, tmp/{a.date}.tree/)", flush=True)
     if not r2_mode:
         if os.path.islink("export/latest") or os.path.exists("export/latest"): os.unlink("export/latest")
         os.symlink(a.date, "export/latest"); print(f"export/latest -> {a.date}", flush=True)
 elif a.stage == "history":
+    if r2_mode: restore_diff(); restore_ledger(); restore_web()
     # in r2 mode the indexes are rebuilt from the bucket (local state holds only today's parts) and the snapshot
     # build time comes from this run's manifest
     run(["uv", "run", "scripts/upload-history.py"] + (["--remote-index", "--manifest", os.path.join(work, "web", "manifest.json")] if r2_mode else []))
@@ -272,6 +312,7 @@ elif a.stage == "feed":
     # under state/feed/published.json and is fetched before and stored after. The bootstrap needs a local export
     # (jobs/ + web/manifest.json), so in r2 mode a missing receipt means "bootstrap by hand once, locally".
     import urllib.request
+    if r2_mode: restore_diff()
     feed = os.path.join(WORK_ROOT, "export", "feed") if r2_mode else "export/feed"; os.makedirs(feed, exist_ok=True)
     receipt = os.path.join(feed, "published.json")
     if r2_mode:
@@ -297,6 +338,7 @@ elif a.stage == "retention":
     try: n_mp = r2c().abort_stale_multipart("", 86_400); print(f"aborted {n_mp} stale incomplete multipart upload(s)", flush=True)
     except Exception as e: print(f"WARNING: multipart cleanup failed ({e})", flush=True)
     if a.keep_full: stamp("kept (--keep-full)"); sys.exit(0)
+    if r2_mode: restore_diff()
     side = sorted(glob.glob(f"export/diffs/*__{a.date}.json"))
     ok = bool(side) and json.load(open(side[-1])).get("ok_to_prune") and json.load(open(side[-1])).get("carry_done")
     if not ok: stamp("today's diff is missing or failed its sanity check; older full exports kept"); sys.exit(0)

@@ -408,6 +408,25 @@ if not RESUMED:
         for f in _CK_FILES:
             if os.path.exists(os.path.join(_ck, f)): r2.put_file(_ck_key + f, os.path.join(_ck, f))
         print(f"checkpoint for pass 2 written to {_ck_key} in {time.time()-_t:.0f}s", flush=True)
+# Hand-off to finalize: the container is the process, so manifest.json, centroids.bin and the group sizes must reach
+# the bucket now (tmp/<date>.web/) or a finalize in a later container never sees them (2026-09-12: a manifest was lost
+# with the disk while its 12,438 group files sat safely in the bucket, and the tree had to be recomputed).
+def _web_up():
+    for f in ("manifest.json", "centroids.bin", ".published-groups.json"):
+        p = os.path.join(out, f)
+        if os.path.exists(p): r2.put_file(f"tmp/{_date}.web/{f}", p)
+if os.environ.get("TREE_GROUPS_PUBLISHED") == "1" and r2 is not None:
+    # the group files of this build are already in the bucket (deterministic build): verify they are exactly the
+    # manifest's leaves, record their sizes the way pass 2 would, hand off, and skip the staging write
+    import shutil as _sh2
+    remote = {k: s for k, s, _ in r2.list(args.groups_prefix)}
+    want = {f"{args.groups_prefix}{n['id']}.json" for n in leaves}
+    missing = sorted(want - set(remote)); extra = sorted(set(remote) - want)
+    if missing or extra: sys.exit(f"TREE_GROUPS_PUBLISHED: {len(remote)} files under {args.groups_prefix} vs {len(want)} manifest leaves ({len(missing)} missing, {len(extra)} extra, e.g. {(missing or extra)[0]}); not the same build")
+    json.dump({"prefix": args.groups_prefix, "published": len(want), "failed": [], "sizes": {k: remote[k] for k in want}}, open(os.path.join(out, ".published-groups.json"), "w"))
+    _web_up(); print(f"group files already published: {len(want)} verified under {args.groups_prefix}; pass 2 skipped; manifest and centroids handed off to tmp/{_date}.web/", flush=True)
+    _sh2.rmtree(con_tmp, ignore_errors=True); sys.exit(0)
+
 # Pass 2 (group files): the parquet is streamed back in DFS order. `assign` maps each row's key to its DFS
 # position; DuckDB joins, sorts by position (spilling to temp_directory), and hands back record batches. Leaves are
 # contiguous in that order, so a file is written the moment its last row arrives. Vectors come from X (the same
@@ -495,12 +514,11 @@ if _bucket_stage:
     for k, _, _ in r2.list(f"tmp/{TMP}.stage/"): r2.delete(k)
 else: shutil.rmtree(stage, ignore_errors=True)
 if seen_rows != NT or written != len(leaves): sys.exit(f"group pass wrote {written}/{len(leaves)} files over {seen_rows}/{NT} rows")
-if r2 is not None:
-    for k, _, _ in r2.list(_ck_key): r2.delete(k)  # pass 2 is done: the checkpoint has served
 if uploader:
     failed = uploader.join()
     print(f"published {r2.uploaded} group files ({r2.uploaded_bytes/1e6:.0f} MB) to {args.groups_prefix}; {len(failed)} failed" + (f", e.g. {failed[0]}" if failed else "") + "; the finalize stage reconciles", flush=True)
     json.dump({"prefix": args.groups_prefix, "published": r2.uploaded, "failed": failed, "sizes": uploader.sizes}, open(os.path.join(out, ".published-groups.json"), "w"))
+if r2 is not None: _web_up()
 try: os.remove(_xpath)
 except (NameError, OSError): pass
 shutil.rmtree(con_tmp, ignore_errors=True)
