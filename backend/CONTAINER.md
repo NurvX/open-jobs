@@ -310,6 +310,17 @@ Lessons that apply to any host:
 
 ## What remains for Cloudflare Containers
 
+**The container is the process (learned 2026-09-12, cost a tree recompute).** An instance stops when its entrypoint
+exits and /work goes with it, so a `from <stage>` resume always starts with an empty work dir. Finalize in a fresh
+container found no manifest.json/centroids.bin (the tree had written them in an earlier chain process), and the feed
+and retention stages would have found no diff sidecar. Since commit f52b2f4 every hand-off goes through the bucket:
+the tree and estimator stages put their outputs in `tmp/<date>.web/`, the ledger stage uploads its parts as soon as
+they are written, and finalize/history/feed/retention restore whatever they are missing from the bucket before they
+run (finalize deletes `tmp/<date>.web/` and the tree checkpoint `tmp/<date>.tree/` after a successful publish). The
+tree stage also takes `TREE_GROUPS_PUBLISHED=1`: when this build's group files are already in the bucket (the build is
+deterministic), it verifies they are exactly the manifest's leaves, records their sizes, hands off and skips pass 2.
+
+
 **Done 2026-09-12 (commit 45f17ac): the tree checkpoints between the fill and pass 2.** Every pass 2 failure on
 2026-09-12 (OOM in the staging write, twice) replayed the vector load (12 min), PCA, the bisection (18 min) and the
 fill (an hour) to get back to the line that broke: about 90 minutes per attempt. The state pass 2 needs is small: the
