@@ -49,6 +49,10 @@ r2_mode = a.source == "r2"; publish = a.publish or r2_mode
 BUCKET = os.environ.get("R2_BUCKET", "jobscream-data")
 export_local = os.path.join("export", a.date)
 WORK_ROOT = os.environ.get("WORK_ROOT", ".")                    # the container mounts its scratch volume here
+if os.environ.get("WORK_ROOT"):
+    # tempfile (the feed's scratch, 2026-09-12) otherwise lands on the container's small root overlay: "No space left
+    # on device" with 13 GB free on the volume. Every child script inherits this.
+    os.environ["TMPDIR"] = os.path.join(WORK_ROOT, "tmp"); os.makedirs(os.environ["TMPDIR"], exist_ok=True)
 work = a.work or (os.path.join(WORK_ROOT, "work-" + a.date) if r2_mode else export_local)
 export_root = f"s3://{BUCKET}/exports/{a.date}" if r2_mode else export_local   # what downstream stages read
 # Group files go under a per-build prefix so the manifest swap at finalize is atomic for readers (a manifest cached for
