@@ -153,9 +153,13 @@ one worker (parallel dedup tore reads); DuckDB's pool is released after the vect
 5 MB (two OOM kills in the tree); the tree checkpoints after the fill and resumes at pass 2 (kept until finalize);
 the container is the process, so every hand-off goes through the bucket; the trainers sample with bernoulli
 (row-count samples are reservoirs); history never uploads a placeholder; TMPDIR is on the work volume.
-Queued: drop the flat mirror (the Worker resolves flat ids through the head; tonight proved it), work stealing in
-the parquet fan-out, the salary extractor across the cores, an estimators step the chain fans out itself, a cron
-trigger for the nightly chain.
+Queued: **the feed stage must stream its pages to the bucket** (build-job-changes.py writes every event page to
+local disk and publish() verifies them all from disk before uploading; 2,313,018 events with text is more than the
+20 GB volume holds, three ENOSPC failures on 2026-09-12; the 2026-09-11 feed was built on the laptop against the
+bucket instead: pages go to a staging prefix as they are flushed, verified from memory, server-side copied under
+changes/<generation>/ once the header is known); drop the flat mirror (the Worker resolves flat ids through the head;
+tonight proved it); work stealing in the parquet fan-out; the salary extractor across the cores; an estimators step
+the chain fans out itself; a cron trigger for the nightly chain.
 
 ## Status (2026-09-10)
 
