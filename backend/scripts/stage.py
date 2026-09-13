@@ -369,9 +369,11 @@ elif a.stage == "retention":
     # a killed tree stage leaves its staging prefix (tmp/.build-<pid>.stage/, ~30 GB of staged rows) behind: two of
     # them sat in the bucket after 2026-09-13's pass 2 retries. Nothing but a running build reads them.
     try:
-        r2 = r2c(); import time as _t; cut = _t.time() - 6 * 3600; n_st = 0
-        for k, _, m in r2.list("tmp/"):
-            if ".stage/" in k and m.timestamp() < cut: r2.delete(k); n_st += 1
+        r2 = r2c(); import time as _t, datetime as _dt; cut = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=6); n_st = 0
+        for k, _, _ in r2.list("tmp/"):  # list() yields (key, size, etag); the modified time comes from head()
+            if ".stage/" in k:
+                h = r2.head(k)
+                if h and h.get("modified") and h["modified"] < cut: r2.delete(k); n_st += 1
         if n_st: print(f"deleted {n_st} stale staging object(s) under tmp/*.stage/", flush=True)
     except Exception as e: print(f"WARNING: staging cleanup failed ({e})", flush=True)
     if a.keep_full: stamp("kept (--keep-full)"); sys.exit(0)
