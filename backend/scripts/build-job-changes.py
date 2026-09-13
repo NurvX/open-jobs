@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import zlib
 import urllib.error
 import urllib.request
 import uuid
@@ -180,7 +181,7 @@ def check_sidecar(side):
 
 def store_event(db, row):
     try:
-        db.execute('INSERT INTO events VALUES (?, ?)', (row['key'], encode(row).decode()))
+        db.execute('INSERT INTO events VALUES (?, ?)', (row['key'], zlib.compress(encode(row), 6)))
     except sqlite3.IntegrityError as exc:
         raise ValueError('duplicate or conflicting job events') from exc
 
@@ -269,23 +270,23 @@ def write_generation(out, db, metadata, previous, scratch):
             pages.append({'file': name, 'rows': len(buffer), 'bytes': len(data), 'sha256': digest(data)})
             buffer, size = [], 0
 
-    for (payload,) in db.execute('SELECT payload FROM events ORDER BY key'):
-        line = payload.encode('utf-8') + b'\n'
+    for (blob,) in db.execute('SELECT payload FROM events ORDER BY key'):
+        line = zlib.decompress(blob) + b'\n'
         if len(line) > MAX_BYTES:
             raise ValueError('job exceeds page byte limit')
         if len(buffer) >= MAX_ROWS or size + len(line) > MAX_BYTES:
             flush()
         buffer.append(line)
         size += len(line)
-        counts[json.loads(payload)['op']] += 1
+        counts[json.loads(line)['op']] += 1
     flush()
     header = dict(metadata, version=VERSION, scope=SCOPE,
                   previous=previous['generation'] if previous else None, counts=counts, pages=pages)
     header['generation'] = digest(encode(header))
     destination = Path(out) / 'changes' / header['generation']
     destination.mkdir(parents=True, exist_ok=True)
-    for page in pages:
-        shutil.copyfile(scratch / page['file'], destination / page['file'])
+    for page in pages:  # moved, not copied: the pages are the bulk of the disk footprint (10 GB on 2026-09-12)
+        shutil.move(str(scratch / page['file']), str(destination / page['file']))
     data = encode(header)
     (destination / 'manifest.json').write_bytes(data)
     # A candidate only: the last successfully published header must be retained separately.
@@ -303,7 +304,7 @@ def build(out, *, diff=None, previous=None, snapshot=None, index=None):
     with tempfile.TemporaryDirectory(prefix='job-changes-') as tmp:
         scratch = Path(tmp)
         with closing(sqlite3.connect(scratch / 'events.sqlite')) as db:
-            db.execute('CREATE TABLE events (key TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+            db.execute('CREATE TABLE events (key TEXT PRIMARY KEY, payload BLOB NOT NULL)')  # zlib: 2.3M events with text were 10 GB as TEXT (2026-09-12)
             db.execute('CREATE TABLE source_rows (key TEXT, op TEXT, PRIMARY KEY(key,op))')
             metadata = load_delta(db, diff, previous) if diff else load_bootstrap(db, snapshot, index)
             if previous and metadata['cursor'] < previous['cursor']:
