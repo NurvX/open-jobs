@@ -177,11 +177,14 @@ in r2 mode): each page is verified from memory as verified_rows() would, put und
 server-side copied under changes/<generation>/ once the header is known; publish() confirms every page's size in
 the bucket before the head moves. The local path (laptop) is unchanged. Three ENOSPC failures on 2026-09-12
 (2,313,018 events with text, more than the 20 GB volume holds) forced it; the 2026-09-11 feed itself was built on
-the laptop against the bucket. Queued: the diff's vanished-board verdicts need a look (2026-09-12 carried 214 boards incl. governmentjobs states
-such as California with 2,591 jobs, which the API pull had exported normally that day; a duplicate check found the
-carried rows only in the carry files, so nothing is doubled, but "vanished" is firing on boards that are present
-under another slug form); a dark board's snapshot can carry a job twice (12 rows in dark.p0 on 2026-09-12; the tree
-now keeps one row per key, the snapshot writer should too); drop the flat mirror (the Worker resolves flat ids through the head;
+the laptop against the bucket. Fixed 2026-09-13 (8da7abf, next): the "vanished" governmentjobs/jobscore boards were real: those two sources are
+pulled through the API into ndjson on the coordinator's disk, and since the fan-out no worker converted them, so the
+diff saw every board gone, asked the crawler, and carried the previous copy forward two nights running (three boards
+lost on the way). The coordinator now converts them itself (`build-parquet.py --ndjson-only`) before the fan-out.
+Also fixed: the snapshot writer paged parts by OFFSET while rows changed between the awaited puts, so a job could
+land in two parts (keyset paging now); the unlock stage keeps the freeze while a worker is still converting; the
+flat mirror is off by default (the Worker resolves flat ids through the head). Queued: delete the stale flat copies
+(groups/<id>.json, ~76 GB) once nobody reads them straight from the bucket (the Worker resolves flat ids through the head;
 tonight proved it); work stealing in the parquet fan-out; the salary extractor across the cores; an estimators step
 the chain fans out itself; a cron trigger for the nightly chain.
 
