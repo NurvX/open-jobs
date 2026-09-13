@@ -385,8 +385,9 @@ def dedup_aggregators():
         if low and not os.path.exists(local): os.makedirs(os.path.dirname(local), exist_ok=True); r2.get_file(f"exports/{date_name}/jobs/{n}", local)
         tmpf = local + ".dedup"
         con.execute(f"""COPY (SELECT d.* FROM read_parquet('{local}') d
-                        WHERE d.tier = 'first_party' OR EXISTS (SELECT 1 FROM winners w WHERE w.ats = d.ats AND w.slug = d.slug AND w.id = d.id))
-                        TO '{tmpf}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 20000)""")
+                        WHERE d.tier = 'first_party' OR EXISTS (SELECT 1 FROM winners w WHERE w.ats = d.ats AND w.slug = d.slug AND w.id = d.id)
+                        QUALIFY row_number() OVER (PARTITION BY d.ats, d.slug, d.id ORDER BY d.first_seen_at) = 1)
+                        TO '{tmpf}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 20000)""")  # one row per key: a board's snapshot can carry a job twice (2026-09-12)
         os.replace(tmpf, local)
         kept += con.execute(f"SELECT count(*) FILTER (tier = 'aggregator') FROM read_parquet('{local}')").fetchone()[0]
         if publish: r2.put_file(f"exports/{date_name}/jobs/{n}", local, "application/octet-stream")

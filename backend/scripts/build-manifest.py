@@ -55,19 +55,13 @@ tag = recipe[0][0]
 # (exports before 2026-09-10 have no tier column at all)
 _has_tier = any(r[0] == "tier" for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{J}', union_by_name=true)").fetchall())
 # Duplicate keys (the same ats/slug/id twice in the export: a dark board's snapshot carried a job twice, 12 rows on
-# 2026-09-12) broke the group pass ("out of order ... duplicated rows"): the key join doubled them. Every corpus scan
-# keeps one row per key, the first by file and row number; dupk is tiny and the anti-join costs nothing.
-con.execute(f"""CREATE TABLE dupk AS SELECT ats, slug, id, min(filename || ':' || file_row_number) AS keep
-    FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true)
-    WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}' GROUP BY 1, 2, 3 HAVING count(*) > 1""")
-_ndup = con.execute("SELECT count(*) FROM dupk").fetchone()[0]
-# The rows to drop, as a constant list in every scan's WHERE: a correlated NOT EXISTS made the planner hash the big
-# side of the staging join and spill the whole disk (2026-09-13); a literal IN list is a plain filter.
-_dropk = [r[0] for r in con.execute(f"""SELECT r.filename || ':' || r.file_row_number FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true) r
-    JOIN dupk d ON d.ats = r.ats AND d.slug = r.slug AND d.id = r.id WHERE r.filename || ':' || r.file_row_number <> d.keep""").fetchall()] if _ndup else []
-if _ndup: print(f"{_ndup} duplicated key(s) in the export; {len(_dropk)} extra row(s) dropped, one row per key kept", flush=True)
-_UNIQ = (" AND (r.filename || ':' || r.file_row_number) NOT IN (" + ", ".join("'" + x.replace("'", "''") + "'" for x in _dropk) + ")") if _dropk else ""
-WHERE_ = f"FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true) r WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'" + (" AND coalesce(tier, 'first_party') = 'first_party'" if _has_tier else "") + _UNIQ
+# 2026-09-12) double rows in the key joins. Filtering them in the scans (virtual filename / row-number columns)
+# flipped the staging join's build side and spilled the disk, so the scans stay plain: the count is reported here and
+# the group pass tolerates a repeated position (build-parquet's dedup round drops them at the source from now on).
+_ndup = con.execute(f"""SELECT count(*) FROM (SELECT 1 FROM read_parquet('{J}', union_by_name=true)
+    WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}' GROUP BY ats, slug, id HAVING count(*) > 1)""").fetchone()[0]
+if _ndup: print(f"{_ndup} duplicated key(s) in the export; the group pass keeps one row per position", flush=True)
+WHERE_ = f"FROM read_parquet('{J}', union_by_name=true) WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'" + (" AND coalesce(tier, 'first_party') = 'first_party'" if _has_tier else "")
 # The exact key string per row ties the vector-loading pass to the group-writing pass without relying on parquet
 # scan order (which is not stable across queries). Not a hash: 3.1M keys produced one 64-bit collision on 2026-09-08.
 HKEY = "ats || '/' || slug || '#' || id AS h"
@@ -75,7 +69,7 @@ q_load = f"""SELECT {HKEY}, ats, slug, coalesce(title,'') AS title, coalesce(loc
                coalesce(json_extract_string(raw_json, '$.company_name'), '') AS company_hint, embedding {WHERE_}"""
 # The search tree is built on first-party rows (WHERE_) and job-board rows are placed into it afterwards (see "filler"
 # below); pass 2 streams both tiers, so its query drops the tier restriction and carries tier/org/via along.
-WHERE_ROWS = f"FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true) r WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'" + _UNIQ
+WHERE_ROWS = f"FROM read_parquet('{J}', union_by_name=true) WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'"
 _tier_cols = "coalesce(tier, 'first_party') AS tier, org, via" if _has_tier else "'first_party' AS tier, NULL AS org, NULL AS via"
 q_rows = f"""SELECT {HKEY}, ats, slug, id, coalesce(title,'') AS title, coalesce(location,'') AS location, coalesce(url,'') AS url,
                epoch_ms(first_seen_at) AS first_seen_ms, epoch_ms(published_at) AS published_ms,
@@ -515,7 +509,9 @@ for b in _batches():
     _emb = b.column("embedding"); _vals = _emb.values.to_numpy(zero_copy_only=False); _offs = _emb.offsets.to_numpy()
     for k in range(len(b)):
         p = cols["pos"][k]
-        if p != seen_rows: sys.exit(f"group pass out of order at position {p} (expected {seen_rows}); the key join lost or duplicated rows")
+        if p != seen_rows:
+            if p == seen_rows - 1: continue  # a duplicated key in the export: the same position comes back twice; the first row wins
+            sys.exit(f"group pass out of order at position {p} (expected {seen_rows}); the key join lost or duplicated rows")
         seen_rows += 1
         if cur is None or p >= cur["hi"]:
             cur = leaf_at[p]; jobs = []
