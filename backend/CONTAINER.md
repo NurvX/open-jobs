@@ -129,6 +129,34 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-12): the first night run entirely in the cloud
+
+The 2026-09-11 consolidation ran end to end on Cloudflare Containers (standard-4, 4 vCPU / 12 GiB / 20 GB), no
+laptop in the loop: 6,320,453 postings (4,452,644 the day before), 12,438 group files (72.6 GB), the head flipped at
+00:59:10 UTC on 2026-09-13. It took 27 hours instead of four. Stage timings on this box, for the record:
+
+| stage | wall clock | notes |
+|---|---|---|
+| parquet | ~7 h | 4 workers; dark 24.1M snapshot rows in 14 parts, 12-27 min/part; the footer read 13-74 min per worker (bucket contention); single-pass dedup 12 min |
+| diff | 30 min | `DIFF_MEMORY=7GB DIFF_THREADS=2` (6 GB/8 threads was OOM-killed; 4 GB ran DuckDB out); carry step needs the slug filter |
+| ledger | 2.5 min | derived; parts uploaded on write |
+| tree | 105 min to the checkpoint + 70 min pass 2 | load 13 min, PCA 1, bisection 20, fill 65 (1.7 GB free at peak); staging 18-27 min at `TREE_PASS2_MEMORY=6GB`; 12,438 files in 40 min |
+| estimators | 110 min | salary scan sampled 8% (bernoulli); the extractor is single-threaded, ~10k rows/min |
+| finalize | 11 min | 9.5 min of it the flat mirror copy |
+| history / archive / retention | 32 s / 21 min / 8 s | |
+| feed | failed once (tempfile on the root overlay), rerun after the TMPDIR fix | |
+
+What broke and what changed (all in the image now): a deploy rolls over every running instance, so the deploy script
+refuses while a run is busy; the wrapper is PID 1 and ignored SIGTERM, so it traps and forwards it; the same-day
+resume of a dark part is layout-aware (pack sidecar); slice workers no longer run the dedup and the dedup round is
+one worker (parallel dedup tore reads); DuckDB's pool is released after the vector load and the S3 upload parts are
+5 MB (two OOM kills in the tree); the tree checkpoints after the fill and resumes at pass 2 (kept until finalize);
+the container is the process, so every hand-off goes through the bucket; the trainers sample with bernoulli
+(row-count samples are reservoirs); history never uploads a placeholder; TMPDIR is on the work volume.
+Queued: drop the flat mirror (the Worker resolves flat ids through the head; tonight proved it), work stealing in
+the parquet fan-out, the salary extractor across the cores, an estimators step the chain fans out itself, a cron
+trigger for the nightly chain.
+
 ## Status (2026-09-10)
 
 The nightly runs end to end in the container image on the laptop (Docker Desktop, 16 GB VM), reading and
