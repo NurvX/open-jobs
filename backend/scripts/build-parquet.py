@@ -21,7 +21,8 @@ argv = sys.argv[1:]
 only = set(next((a.split("=", 1)[1] for a in argv if a.startswith("--ats=")), "").split(",")) - {""}
 publish = "--publish" in argv
 dedup_only = "--dedup-only" in argv  # rerun just the end-of-run aggregator dedup over the day's dark part files
-ndjson_only = "--ndjson-only" in argv  # only the API-pulled sources (local ndjson: jobscore, governmentjobs); no snapshots, no dedup
+ndjson_only = "--ndjson-only" in argv
+pack_sig = {}  # part name -> sha256 of its (file, rows) list: the layout a published part was built from (finalize() reads it; defined before the ndjson loop)  # only the API-pulled sources (local ndjson: jobscore, governmentjobs); no snapshots, no dedup
 # --parts=0,3,5 or --parts=mod:N:i (this worker takes part indices with pi % N == i): one worker's slice of a source
 # that converts in parts (dark). Other workers run the same command with a different slice; the packs are computed
 # identically from the same snapshot listing, so slices never overlap.
@@ -234,7 +235,6 @@ for f in ([] if dedup_only else files):
 # ---- per-board R2 snapshot parquets: local (scripts/pull-snapshots.mjs) or read from the bucket in place ----
 import datetime as _dt
 PART_ROWS = int(os.environ.get("PARQUET_PART_ROWS", "2000000"))
-pack_sig = {}  # part name -> sha256 of its (file, rows) list: the layout the published part was built from
 def _published_recently(name):
     """Same-day resume: both published objects exist and were written in the last 12 hours -> this run already did it.
     A part (dark.p<n>) also has to carry the same pack layout: packs are cut from the live snapshot listing, so a part
