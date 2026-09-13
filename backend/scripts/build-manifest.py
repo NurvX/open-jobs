@@ -388,6 +388,7 @@ if not RESUMED:
     # outputs
     C = np.stack([n["_cen"] for n in nodes]).astype(np.float16)
     C.tofile(os.path.join(out, "centroids.bin"))
+    for n in nodes: n.pop("_cen", None)  # 24k x 1536 float64 (300 MB) that nothing reads after centroids.bin
     manifest = {
         "recipe": tag, "dims": D, "jobs": N_FP, "jobs_aggregator": N_AGG, "jobs_total": NT, "built_on": N, "nodes": len(nodes), "leaves": len(leaves),
         "groups": args.groups_prefix,   # where this build's group files live under /data/ (per-build prefix; readers must use it)
@@ -458,6 +459,10 @@ con.execute("CREATE TABLE assign (h VARCHAR, pos BIGINT)")
 _hall = pa.chunked_array([H.cast(pa.large_string())] + ([HF.cast(pa.large_string())] if M else [])).combine_chunks()  # DuckDB hands back large_string with arrow_large_buffer_size
 _assign = pa.table({"h": _hall.take(pa.array(order)), "pos": pa.array(np.arange(NT, dtype=np.int64))}); del _hall
 con.register("assign_src", _assign); con.execute("INSERT INTO assign SELECT h, pos FROM assign_src"); con.unregister("assign_src"); del _assign
+del H
+try: del HF
+except NameError: pass
+import gc as _gc3; _gc3.collect(); print(f"  assign built; key arrays freed; rss {_rss():.1f} GiB", file=sys.stderr, flush=True)
 leaf_at = {n["lo"]: n for n in leaves}  # DFS position -> the leaf that starts there
 cur = None; jobs = []; written = 0; seen_rows = 0
 def _unit(v):
@@ -482,9 +487,9 @@ else:
     if _old or _mp: print(f"  cleared {len(_old)} leftover staging objects and {_mp} incomplete multipart uploads from the bucket", file=sys.stderr, flush=True)
 # Rows carry their 6 KB vector now, and a partitioned write buffers up to 524,288 rows per open partition by default:
 # 18 partitions of that ran DuckDB out of its cap (2026-09-11). Flush every few thousand rows instead.
-con.execute("SET partitioned_write_flush_threshold=5000")
+con.execute("SET partitioned_write_flush_threshold=2500")  # 27 partitions x rows x ~10 KB buffered outside the cap; halved 2026-09-13
 con.execute(f"""COPY (SELECT a.pos, (a.pos // {CHUNK})::INTEGER AS chunk, j.* EXCLUDE (h) FROM ({q_rows}) j JOIN assign a USING (h))
-  TO '{stage}' (FORMAT PARQUET, PARTITION_BY (chunk), COMPRESSION ZSTD, ROW_GROUP_SIZE 10000)""")
+  TO '{stage}' (FORMAT PARQUET, PARTITION_BY (chunk), COMPRESSION ZSTD, ROW_GROUP_SIZE 5000)""")  # per-partition row-group buffers live outside DuckDB's cap
 print(f"  staged {NT:,} rows in {(NT + CHUNK - 1) // CHUNK} chunks, {time.time()-t:.0f}s; rss {_rss():.1f} GiB", file=sys.stderr, flush=True)
 def _batches():
     for k in range((NT + CHUNK - 1) // CHUNK):
