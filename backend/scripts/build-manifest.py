@@ -61,8 +61,12 @@ con.execute(f"""CREATE TABLE dupk AS SELECT ats, slug, id, min(filename || ':' |
     FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true)
     WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}' GROUP BY 1, 2, 3 HAVING count(*) > 1""")
 _ndup = con.execute("SELECT count(*) FROM dupk").fetchone()[0]
-if _ndup: print(f"{_ndup} duplicated key(s) in the export; one row each is kept", flush=True)
-_UNIQ = " AND NOT EXISTS (SELECT 1 FROM dupk d WHERE d.ats = r.ats AND d.slug = r.slug AND d.id = r.id AND d.keep <> r.filename || ':' || r.file_row_number)"
+# The rows to drop, as a constant list in every scan's WHERE: a correlated NOT EXISTS made the planner hash the big
+# side of the staging join and spill the whole disk (2026-09-13); a literal IN list is a plain filter.
+_dropk = [r[0] for r in con.execute(f"""SELECT r.filename || ':' || r.file_row_number FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true) r
+    JOIN dupk d ON d.ats = r.ats AND d.slug = r.slug AND d.id = r.id WHERE r.filename || ':' || r.file_row_number <> d.keep""").fetchall()] if _ndup else []
+if _ndup: print(f"{_ndup} duplicated key(s) in the export; {len(_dropk)} extra row(s) dropped, one row per key kept", flush=True)
+_UNIQ = (" AND (r.filename || ':' || r.file_row_number) NOT IN (" + ", ".join("'" + x.replace("'", "''") + "'" for x in _dropk) + ")") if _dropk else ""
 WHERE_ = f"FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true) r WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'" + (" AND coalesce(tier, 'first_party') = 'first_party'" if _has_tier else "") + _UNIQ
 # The exact key string per row ties the vector-loading pass to the group-writing pass without relying on parquet
 # scan order (which is not stable across queries). Not a hash: 3.1M keys produced one 64-bit collision on 2026-09-08.
