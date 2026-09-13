@@ -129,6 +129,25 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-13): the second cloud night, and the first with a ✅ from the container itself
+
+The 2026-09-12 consolidation ran in the cloud from 23:05 to 15:08 local (16 h): 6,669,472 postings (6,322,291 the
+day before), 12,633 group files (76.5 GB), head flipped ~18:14 UTC, feed generation 948913ba (570,506 upserts,
+185,943 removes) built with streamed pages, archive 27.83 GB. Four interventions, each a fix, a deploy and a resume:
+
+- 04:13 the parquet coordinator died on a transient read error polling a worker (the dedup on the worker finished
+  on its own): polls retry now, and an uncaught exception records a failure (the report had ticked the dead stage).
+- 07:02 the tree was OOM-killed at the last rows of the fill, before the checkpoint: the 3.6 GB projection is freed
+  before the fill (it went 7.4 -> 3.8 GiB resident going in). Rebuild 2 h.
+- 09:34 pass 2 OOM-killed in the staging write: node centroids and key arrays freed once used, staging row groups
+  and partition flushes halved, `TREE_PASS2_MEMORY=5GB`. Resumed from the checkpoint in 2 min.
+- 10:11 the group pass hit a repeated position: one dark board's snapshot carried a job twice (12 rows). Two
+  attempts to filter the duplicates in the scans flipped the staging join's build side and spilled the disk; the
+  scans are plain again, the group pass skips a repeated position, and the dedup round keeps one row per key.
+
+Parquet: 5 h for 25.8M dark snapshot rows in 14 parts plus 33 sources, single dedup 5,425,377 -> 3,073,084
+aggregator rows in 20 min. Diff 25 min first try. Estimators 2 h. Finalize 11 min (9 of them the flat mirror).
+
 ## Status (2026-09-12): the first night run entirely in the cloud
 
 The 2026-09-11 consolidation ran end to end on Cloudflare Containers (standard-4, 4 vCPU / 12 GiB / 20 GB), no
