@@ -1317,20 +1317,27 @@ export class Board extends DurableObject<Env> {
 			} else {
 				// parts of SNAPSHOT_PART_ROWS rows, each built and uploaded on its own so peak memory is one part
 				const parts = Math.ceil(open / SNAPSHOT_PART_ROWS);
+				// Keyset paging, not OFFSET: the put between parts awaits, rows can change meanwhile, and an OFFSET page
+				// then shifts so a job lands in two parts (12 duplicate rows in one board's snapshot, 2026-09-12).
+				let after = ""; let written = 0;
 				for (let p = 0; p < parts; p++) {
-					const cursor = this.ctx.storage.sql.exec(`SELECT * FROM jobs WHERE removed_at IS NULL ORDER BY id LIMIT ? OFFSET ?`, SNAPSHOT_PART_ROWS, p * SNAPSHOT_PART_ROWS);
+					const cursor = this.ctx.storage.sql.exec(`SELECT * FROM jobs WHERE removed_at IS NULL AND id > ? ORDER BY id LIMIT ?`, after, SNAPSHOT_PART_ROWS);
+					let n = 0;
 					function* rows(): Iterable<StoredJob & { embeddingBuf?: ArrayBuffer | null }> {
 						for (const r of cursor) {
-							const j = rowToJob(r as unknown as JobRow, false, meta.lastOkAt ?? 0) as StoredJob & { embeddingBuf?: ArrayBuffer | null };
-							j.embeddingBuf = (r as unknown as JobRow).embedding ?? null;
+							const row = r as unknown as JobRow; after = row.id; n++;
+							const j = rowToJob(row, false, meta.lastOkAt ?? 0) as StoredJob & { embeddingBuf?: ArrayBuffer | null };
+							j.embeddingBuf = row.embedding ?? null;
 							yield j;
 						}
 					}
 					const buf = buildSnapshotParquet({ ats: meta.ats, slug: meta.slug, jobs: rows(), meta });
+					if (n === 0) break;  // fewer rows than counted (rows removed meanwhile): no empty trailing part
 					await this.env.DATA.put(snapshotKey(meta.ats, meta.slug, p), buf);
+					written = p + 1;
 				}
-				for (let p = parts; p < (meta.snapshotParts ?? 1); p++) await this.env.DATA.delete(snapshotKey(meta.ats, meta.slug, p)); // the board shrank
-				meta.snapshotParts = parts;
+				for (let p = written; p < (meta.snapshotParts ?? 1); p++) await this.env.DATA.delete(snapshotKey(meta.ats, meta.slug, p)); // the board shrank
+				meta.snapshotParts = written;
 			}
 			meta.snapshotAt = now; meta.snapshotDirty = false; meta.dirtySince = null; meta.snapshotError = null;
 		} catch (e) {
