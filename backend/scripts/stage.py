@@ -329,7 +329,7 @@ elif a.stage == "feed":
     if os.path.exists(receipt):
         side = sorted(glob.glob(f"export/diffs/*__{a.date}.json"))
         if not side: stamp("no diff ending today; nothing to project"); sys.exit(0)
-        run(["uv", "run", "scripts/build-job-changes.py", "--out", feed, "--diff", side[-1], "--previous", receipt, "--publish-base", a.worker])
+        run(["uv", "run", "scripts/build-job-changes.py", "--out", feed, "--diff", side[-1], "--previous", receipt, "--publish-base", a.worker] + (["--stream-pages"] if r2_mode else []))  # the 20 GB volume cannot hold a big day's pages
     else:
         run(["uv", "run", "scripts/build-job-changes.py", "--out", feed, "--snapshot", export_local, "--index", idx, "--publish-base", a.worker])
     if r2_mode: r2.put_file("state/feed/published.json", receipt, "application/json")

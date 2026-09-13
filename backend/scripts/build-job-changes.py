@@ -257,7 +257,41 @@ def load_bootstrap(db, snapshot, index_path):
             'snapshot_at': manifest['built_at'], 'source_sha256': digest(encode(hashes))}
 
 
-def write_generation(out, db, metadata, previous, scratch):
+def check_page(data, rows):
+    """The per-row checks verified_rows() makes on a page file, on a page still in memory."""
+    lines = data.splitlines()
+    if len(lines) != rows:
+        raise ValueError('page row count mismatch')
+    for line in lines:
+        row = json.loads(line)
+        if row['op'] not in ('upsert', 'remove'):
+            raise ValueError('invalid feed operation')
+        if row['op'] == 'upsert' and row['key'] != identity(row['job']):
+            raise ValueError('event key mismatch')
+
+
+class PageStream:
+    """Pages go straight to a staging prefix in the bucket as they are flushed (2026-09-12: a 2.3M-event day was
+    more page bytes than the 20 GB cloud volume holds, three times over with the local copies), verified from memory
+    first; once the header names the generation they are server-side copied under changes/<generation>/."""
+    def __init__(self, r2):
+        self.r2 = r2
+        self.staging = f'changes/.staging/{uuid.uuid4().hex}/'
+        self.names = []
+
+    def put(self, name, data, rows):
+        check_page(data, rows)
+        self.r2.put_bytes(self.staging + name, data, 'application/x-ndjson')
+        self.names.append(name)
+
+    def place(self, generation):
+        for name in self.names:
+            self.r2.copy(self.staging + name, f'changes/{generation}/{name}', 'application/x-ndjson')
+        for name in self.names:
+            self.r2.delete(self.staging + name)
+
+
+def write_generation(out, db, metadata, previous, scratch, stream=None):
     pages, buffer, size = [], [], 0
     counts = {'upsert': 0, 'remove': 0}
 
@@ -266,7 +300,10 @@ def write_generation(out, db, metadata, previous, scratch):
         if buffer:
             data = b''.join(buffer)
             name = f'{len(pages):06d}.ndjson'
-            (scratch / name).write_bytes(data)
+            if stream:
+                stream.put(name, data, len(buffer))
+            else:
+                (scratch / name).write_bytes(data)
             pages.append({'file': name, 'rows': len(buffer), 'bytes': len(data), 'sha256': digest(data)})
             buffer, size = [], 0
 
@@ -285,8 +322,11 @@ def write_generation(out, db, metadata, previous, scratch):
     header['generation'] = digest(encode(header))
     destination = Path(out) / 'changes' / header['generation']
     destination.mkdir(parents=True, exist_ok=True)
-    for page in pages:  # moved, not copied: the pages are the bulk of the disk footprint (10 GB on 2026-09-12)
-        shutil.move(str(scratch / page['file']), str(destination / page['file']))
+    if stream:
+        stream.place(header['generation'])
+    else:
+        for page in pages:  # moved, not copied: the pages are the bulk of the disk footprint (10 GB on 2026-09-12)
+            shutil.move(str(scratch / page['file']), str(destination / page['file']))
     data = encode(header)
     (destination / 'manifest.json').write_bytes(data)
     # A candidate only: the last successfully published header must be retained separately.
@@ -296,7 +336,7 @@ def write_generation(out, db, metadata, previous, scratch):
     return header
 
 
-def build(out, *, diff=None, previous=None, snapshot=None, index=None):
+def build(out, *, diff=None, previous=None, snapshot=None, index=None, stream=None):
     if bool(diff) == bool(snapshot) or (snapshot and not index) or (diff and not previous):
         raise ValueError('choose a diff with previous header, or snapshot with index')
     if previous:
@@ -311,7 +351,7 @@ def build(out, *, diff=None, previous=None, snapshot=None, index=None):
                 raise ValueError('cannot move cursor backwards')
             if previous and metadata['cursor'] == previous['cursor'] and metadata['source'] != previous['source']:
                 raise ValueError('same-date source was rewritten')
-            return write_generation(out, db, metadata, previous, scratch)
+            return write_generation(out, db, metadata, previous, scratch, stream)
 
 
 def verified_rows(folder, header):
@@ -388,7 +428,7 @@ def put(key, path):
                     '--remote'], check=True)
 
 
-def publish(out, header, base, get_head=remote_head, upload=put):
+def publish(out, header, base, get_head=remote_head, upload=put, streamed=None):
     validate_header(header)
     head = get_head(base)
     if head:
@@ -399,11 +439,19 @@ def publish(out, header, base, get_head=remote_head, upload=put):
     folder = Path(out) / 'changes' / header['generation']
     if read_json(folder / 'manifest.json') != header:
         raise ValueError('local manifest changed after build')
-    # Validate the whole generation before any upload; an invalid later page cannot leave a new head.
-    for _ in verified_rows(folder, header):
-        pass
-    for page in header['pages']:
-        upload(f"changes/{header['generation']}/{page['file']}", folder / page['file'])
+    if streamed:
+        # every page was verified from memory before it left the process and now sits under changes/<generation>/:
+        # confirm each is there at its recorded size before the head can move
+        for page in header['pages']:
+            info = streamed.head(f"changes/{header['generation']}/{page['file']}")
+            if not info or info['size'] != page['bytes']:
+                raise ValueError(f"streamed page {page['file']} missing or truncated in the bucket")
+    else:
+        # Validate the whole generation before any upload; an invalid later page cannot leave a new head.
+        for _ in verified_rows(folder, header):
+            pass
+        for page in header['pages']:
+            upload(f"changes/{header['generation']}/{page['file']}", folder / page['file'])
     upload(f"changes/{header['generation']}/manifest.json", folder / 'manifest.json')
     if get_head(base) != head:
         raise ValueError('remote head changed during upload; serialize publishers')
@@ -422,12 +470,19 @@ def main():
     parser.add_argument('--index', type=Path, help='saved diffs/index.json matching the bootstrap export')
     parser.add_argument('--previous', type=Path, help='last successfully published feed manifest (not candidate latest)')
     parser.add_argument('--publish-base', help='opt in to R2 publication via the existing Worker')
+    parser.add_argument('--stream-pages', action='store_true',
+                        help='send pages to the bucket as they are built (no local page files; needs R2 credentials)')
     args = parser.parse_args()
+    r2 = None
+    if args.stream_pages:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from r2 import R2
+        r2 = R2()
     header = (validate_header(read_json(args.candidate)) if args.candidate else
               build(args.out, diff=args.diff, previous=read_json(args.previous) if args.previous else None,
-                    snapshot=args.snapshot, index=args.index))
+                    snapshot=args.snapshot, index=args.index, stream=PageStream(r2) if r2 else None))
     if args.publish_base:
-        publish(args.out, header, args.publish_base)
+        publish(args.out, header, args.publish_base, streamed=r2)
         # A durable success receipt, separate from changes/latest.json (which is only a candidate).
         receipt = args.out / 'published.json.tmp'
         receipt.write_bytes(encode(header))
