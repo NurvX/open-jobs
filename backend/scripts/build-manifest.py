@@ -306,6 +306,9 @@ if not RESUMED:
     # ---- filler: job-board postings (the aggregator tier) are placed into the first-party tree, not used to build it.
     # Each batch descends from the root to a leaf by centroid cosine (the same walk the client does), so the tree's
     # shape, labels, and exemplars stay first-party while the groups carry both tiers. Vectors go to a second memmap.
+    # The projection Z (N x 256 f32, 3.6 GB) served the bisection; the fill needs only the centroids and the parquet
+    # stream, yet Z stayed resident through it and the 12 GiB box was killed at the last rows (2026-09-13). Free it.
+    del Z; import gc as _gc2; _gc2.collect(); print(f"  projection freed before the fill; rss {_rss():.1f} GiB", flush=True)
     M = 0; fill_leaf = None; HF = None
     FILL_SRC = f"SELECT {HKEY}, embedding {WHERE_ROWS}"
     M = con.execute(f"SELECT count(*) FROM ({FILL_SRC}) j ANTI JOIN keypos k USING (h)").fetchone()[0]
@@ -438,7 +441,8 @@ t = time.time()
 # Python-side copy. Output is unaffected.
 # The tree's own arrays are done (pass 2 reads vectors from the parquet rows): free them before DuckDB grows.
 if not RESUMED:
-    del Z
+    try: del Z
+    except NameError: pass  # freed before the fill
     try: del X; os.remove(_xpath)
     except (NameError, OSError): pass
     del titles, locs  # the node labels are built; two lists of N strings go before DuckDB grows (hints stay: company() in pass 2 reads them)
