@@ -366,6 +366,14 @@ elif a.stage == "retention":
     # incomplete multipart uploads (a killed stage's parts) are billable and invisible to listings: abort any older than a day
     try: n_mp = r2c().abort_stale_multipart("", 86_400); print(f"aborted {n_mp} stale incomplete multipart upload(s)", flush=True)
     except Exception as e: print(f"WARNING: multipart cleanup failed ({e})", flush=True)
+    # a killed tree stage leaves its staging prefix (tmp/.build-<pid>.stage/, ~30 GB of staged rows) behind: two of
+    # them sat in the bucket after 2026-09-13's pass 2 retries. Nothing but a running build reads them.
+    try:
+        r2 = r2c(); import time as _t; cut = _t.time() - 6 * 3600; n_st = 0
+        for k, _, m in r2.list("tmp/"):
+            if ".stage/" in k and m.timestamp() < cut: r2.delete(k); n_st += 1
+        if n_st: print(f"deleted {n_st} stale staging object(s) under tmp/*.stage/", flush=True)
+    except Exception as e: print(f"WARNING: staging cleanup failed ({e})", flush=True)
     if a.keep_full: stamp("kept (--keep-full)"); sys.exit(0)
     if r2_mode: restore_diff()
     side = sorted(glob.glob(f"export/diffs/*__{a.date}.json"))
