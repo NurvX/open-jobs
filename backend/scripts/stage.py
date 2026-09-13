@@ -108,6 +108,11 @@ if a.stage not in ("ingest", "report", "selftest") and not a.dry_run:
     threading.Thread(target=_renew, daemon=True).start()
     if a.stage == "retention": atexit.register(lock_release)
 RUNLOG = os.path.join(work, "run.jsonl")   # one line per stage outcome; the report stage reads it
+def _excepthook(tp, val, tb):
+    try: record(False, f"uncaught {tp.__name__}: {str(val)[:160]}")
+    except Exception: pass
+    sys.__excepthook__(tp, val, tb)
+sys.excepthook = _excepthook
 def record(ok, msg):
     with open(RUNLOG, "a") as f: f.write(json.dumps({"stage": a.stage, "date": a.date, "ok": ok, "seconds": round(time.time() - t0), "msg": msg, "at": time.strftime("%H:%M:%S")}) + "\n")
 def run(cmd, **kw):
@@ -228,7 +233,12 @@ elif a.stage == "parquet":
                     time.sleep(60)
                     for i in starts:
                         if i in done: continue
-                        st = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", headers=hdr), timeout=60))
+                        st = None
+                        for attempt in range(5):  # a transient read error killed the coordinator mid-round (2026-09-13); the workers ran on
+                            try: st = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", headers=hdr), timeout=60)); break
+                            except Exception as e:
+                                print(f"  worker {i}: status poll failed ({str(e)[:100]}); retry {attempt + 1}/5", flush=True); time.sleep(15)
+                        if st is None: continue
                         stops = [e for e in st.get("journal", []) if e.get("ev") == "stop" and e.get("t", 0) > starts[i]]
                         if stops:
                             done[i] = stops[-1].get("exitCode"); tail = ((st.get("lastOutput") or {}).get("text") or "").strip().splitlines()[-3:]
