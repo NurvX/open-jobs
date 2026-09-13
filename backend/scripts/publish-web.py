@@ -22,7 +22,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--web", default=os.path.join(os.environ.get("WORK_DIR") or os.environ.get("EXPORT_DIR", "export"), "web"))
 ap.add_argument("--workers", type=int, default=8)
 ap.add_argument("--groups-prefix", default=os.environ.get("GROUPS_PREFIX", "groups/"))
-ap.add_argument("--mirror-prefix", default=os.environ.get("GROUPS_MIRROR_PREFIX", "groups/"), help="after the manifest: server-side copy this build's group files here for readers that hardcode the flat path (old checkouts); '' to skip")
+ap.add_argument("--mirror-prefix", default=os.environ.get("GROUPS_MIRROR_PREFIX", ""), help="after the manifest: server-side copy this build's group files here for readers that hardcode the flat path (old checkouts); '' to skip")
 ap.add_argument("--root-prefix", default=os.environ.get("ROOT_PREFIX", ""), help="key prefix for the models, centroids, and manifest (tests only; production is the bucket root)")
 a = ap.parse_args()
 web = a.web; r2 = R2(); t0 = time.time()
@@ -60,6 +60,8 @@ r2.put_file(a.root_prefix + "manifest.json", os.path.join(web, "manifest.json"),
 # current build's prefix (readers written before the dated layout), and pollers can watch built_at cheaply.
 head = {k: manifest.get(k) for k in ("groups", "built_at", "leaves", "nodes", "jobs", "jobs_aggregator", "jobs_total", "recipe", "dims")}
 r2.put_bytes(a.root_prefix + "manifest-head.json", json.dumps(head).encode(), "application/json")
+# Off by default since 2026-09-13: the Worker resolves flat groups/<id>.json requests through manifest-head.json to the
+# current build's prefix, so the third copy (12k server-side copies, ~76 GB) buys nothing. GROUPS_MIRROR_PREFIX=groups/ re-enables it.
 if a.mirror_prefix and a.mirror_prefix != a.groups_prefix:
     # Three copies of the group files live in the bucket: this build's dated prefix (what the manifest names), the
     # previous build's (a manifest cached for an hour must still find its files), and this flat mirror for readers

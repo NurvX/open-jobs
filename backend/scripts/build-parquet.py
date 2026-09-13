@@ -21,6 +21,7 @@ argv = sys.argv[1:]
 only = set(next((a.split("=", 1)[1] for a in argv if a.startswith("--ats=")), "").split(",")) - {""}
 publish = "--publish" in argv
 dedup_only = "--dedup-only" in argv  # rerun just the end-of-run aggregator dedup over the day's dark part files
+ndjson_only = "--ndjson-only" in argv  # only the API-pulled sources (local ndjson: jobscore, governmentjobs); no snapshots, no dedup
 # --parts=0,3,5 or --parts=mod:N:i (this worker takes part indices with pi % N == i): one worker's slice of a source
 # that converts in parts (dark). Other workers run the same command with a different slice; the packs are computed
 # identically from the same snapshot listing, so slices never overlap.
@@ -250,7 +251,7 @@ def _published_recently(name):
         if prev != pack_sig[name]: print(f"{name:16} published earlier under a different pack layout; rebuilt", flush=True); return False
     return True
 
-for src in ([] if dedup_only else (snap_dirs or snap_r2)):
+for src in ([] if (dedup_only or ndjson_only) else (snap_dirs or snap_r2)):
     if from_r2:
         ats = src; pq = r2.url(f"snapshots/{ats}/*.parquet")
         outs = {k: os.path.join(root, k, f"{ats}.parquet") for k in ("jobs", "boards")}
@@ -402,7 +403,8 @@ J = os.path.join(root, "jobs", "*.parquet")
 # A fan-out worker (--parts, stage.py PARQUET_WORKERS) converts its slice only: the dedup is its own round, run once
 # every worker has published (otherwise each worker rewrites its parts against a partial first-party set and races
 # a part another worker is still publishing; 2026-09-11 take 4).
-if dedup_only or not _parts_arg: dedup_aggregators()
+if ndjson_only: print("ndjson sources done; snapshots and the aggregator dedup are the workers' rounds", flush=True)
+elif dedup_only or not _parts_arg: dedup_aggregators()
 else: print("fan-out slice done; aggregator dedup runs in the dedup round", flush=True)
 if glob.glob(J):
     show(f"SELECT count(*) AS boards, count(*) FILTER (last_status='ok') AS ok, count(*) FILTER (last_status='gone') AS gone, count(*) FILTER (last_status='error') AS error, count(*) FILTER (last_status IS NULL) AS unfetched FROM read_parquet('{B}', union_by_name=true)")

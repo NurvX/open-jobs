@@ -87,8 +87,19 @@ def lock_release(force=False):
     except Exception as e: print(f"WARNING: lock release failed: {e}", flush=True)
 if a.stage == "unlock":
     lock_release(force=True)
-    try: lock_call("thaw", {"holder": lock_holder(), "force": True}); print("snapshot writes thawed", flush=True)  # a killed or failed parquet stage leaves the freeze on
-    except Exception as e: print(f"WARNING: thaw failed: {e}", flush=True)
+    # The freeze guards the workers' snapshot reads: when the coordinator dies mid-fan-out (2026-09-13) its failure
+    # path runs this stage while the workers are still converting, and thawing then lets boards rewrite the files
+    # under them. Leave the freeze on while any worker container is busy; it expires on its own otherwise.
+    busy = []
+    for i in range(6):
+        try:
+            st = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", headers={"authorization": f"Bearer {token}", "user-agent": "open-jobs-stage/1"}), timeout=30))
+            if st.get("current") and (st.get("state") or {}).get("status") in ("running", "healthy"): busy.append(i)
+        except Exception: pass
+    if busy: print(f"snapshot freeze kept: worker(s) {busy} still running (it expires on its own)", flush=True)
+    else:
+        try: lock_call("thaw", {"holder": lock_holder(), "force": True}); print("snapshot writes thawed", flush=True)  # a killed or failed parquet stage leaves the freeze on
+        except Exception as e: print(f"WARNING: thaw failed: {e}", flush=True)
     sys.exit(0)
 if a.stage not in ("ingest", "report", "selftest") and not a.dry_run:
     if not token: sys.exit("ADMIN_TOKEN is required: the publisher lock lives behind the admin endpoints")
@@ -246,6 +257,10 @@ elif a.stage == "parquet":
                 bad = {i: c for i, c in done.items() if c != 0}
                 if bad: record(False, f"{round_label}: worker(s) failed: {bad}"); sys.exit(f"{round_label}: worker(s) failed: {bad}")
             base = ["/usr/local/bin/uv", "run", "scripts/build-parquet.py", "--publish"]
+            # The API-pulled sources (jobscore, governmentjobs) are ndjson on this container's disk: the workers never see
+            # them, and for two nights (2026-09-11, -12) nobody converted them; the diff saw every board vanished and
+            # carried the previous copy forward. The coordinator converts them first (a minute).
+            run(base + ["--ndjson-only"], env={"EXPORT_DIR": export_local, "SNAPSHOT_SOURCE": "r2"})
             print(f"parquet fan-out across {nw} workers: dark parts by index, then {sum(len(x) for x in slots)} other sources by bytes", flush=True)
             fan("parquet", [base + [f"--ats=dark,{','.join(slots[i])}" if slots[i] else "--ats=dark", f"--parts=mod:{nw}:{i}"] for i in range(nw)])
             # The dedup is one worker over every part: pass A reads all parts and pass B rewrites them, so parallel
