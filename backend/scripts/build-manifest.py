@@ -54,7 +54,16 @@ tag = recipe[0][0]
 # first-party postings only in the search tree for now: the aggregator tier has no age curve of its own yet
 # (exports before 2026-09-10 have no tier column at all)
 _has_tier = any(r[0] == "tier" for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{J}', union_by_name=true)").fetchall())
-WHERE_ = f"FROM read_parquet('{J}', union_by_name=true) WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'" + (" AND coalesce(tier, 'first_party') = 'first_party'" if _has_tier else "")
+# Duplicate keys (the same ats/slug/id twice in the export: a dark board's snapshot carried a job twice, 12 rows on
+# 2026-09-12) broke the group pass ("out of order ... duplicated rows"): the key join doubled them. Every corpus scan
+# keeps one row per key, the first by file and row number; dupk is tiny and the anti-join costs nothing.
+con.execute(f"""CREATE TABLE dupk AS SELECT ats, slug, id, min(filename || ':' || file_row_number) AS keep
+    FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true)
+    WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}' GROUP BY 1, 2, 3 HAVING count(*) > 1""")
+_ndup = con.execute("SELECT count(*) FROM dupk").fetchone()[0]
+if _ndup: print(f"{_ndup} duplicated key(s) in the export; one row each is kept", flush=True)
+_UNIQ = " AND NOT EXISTS (SELECT 1 FROM dupk d WHERE d.ats = r.ats AND d.slug = r.slug AND d.id = r.id AND d.keep <> r.filename || ':' || r.file_row_number)"
+WHERE_ = f"FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true) r WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'" + (" AND coalesce(tier, 'first_party') = 'first_party'" if _has_tier else "") + _UNIQ
 # The exact key string per row ties the vector-loading pass to the group-writing pass without relying on parquet
 # scan order (which is not stable across queries). Not a hash: 3.1M keys produced one 64-bit collision on 2026-09-08.
 HKEY = "ats || '/' || slug || '#' || id AS h"
@@ -62,7 +71,7 @@ q_load = f"""SELECT {HKEY}, ats, slug, coalesce(title,'') AS title, coalesce(loc
                coalesce(json_extract_string(raw_json, '$.company_name'), '') AS company_hint, embedding {WHERE_}"""
 # The search tree is built on first-party rows (WHERE_) and job-board rows are placed into it afterwards (see "filler"
 # below); pass 2 streams both tiers, so its query drops the tier restriction and carries tier/org/via along.
-WHERE_ROWS = f"FROM read_parquet('{J}', union_by_name=true) WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'"
+WHERE_ROWS = f"FROM read_parquet('{J}', union_by_name=true, filename=true, file_row_number=true) r WHERE is_open AND embed_status = 'done' AND embed_model = '{tag}'" + _UNIQ
 _tier_cols = "coalesce(tier, 'first_party') AS tier, org, via" if _has_tier else "'first_party' AS tier, NULL AS org, NULL AS via"
 q_rows = f"""SELECT {HKEY}, ats, slug, id, coalesce(title,'') AS title, coalesce(location,'') AS location, coalesce(url,'') AS url,
                epoch_ms(first_seen_at) AS first_seen_ms, epoch_ms(published_at) AS published_ms,
