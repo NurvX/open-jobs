@@ -13,6 +13,9 @@ if [ "$1" != "--wait" ]; then
 import json,sys; d=json.load(sys.stdin); c=d.get("current"); st=(d.get("state") or {}).get("status")
 print(sys.argv[1] or "chain", c["label"]) if c and st in ("running","healthy") else None' "$o"; done)
   if [ -n "$busy" ] && [ "$1" != "--force" ]; then echo "REFUSED: a deploy rolls over running containers and would kill:"; echo "$busy"; echo "wait for it, or cloud-deploy.sh --force"; exit 2; fi
+  # Docker Desktop's VM disk filled with build cache after a day of deploys (189 GB on 2026-09-13; the VM went
+  # read-only and had to be reset). Keep 30 GB of recent cache and drop dangling images before every build.
+  docker builder prune -f --keep-storage 30GB > /dev/null 2>&1 || true; docker image prune -f > /dev/null 2>&1 || true
   BUILD="$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"; echo "$BUILD" > scripts/BUILD; echo "build id $BUILD"
   npx wrangler deploy > /tmp/cloud-deploy.out 2>&1; rc=$?
   grep -E 'Current Version|Building image|: digest:' /tmp/cloud-deploy.out || true
