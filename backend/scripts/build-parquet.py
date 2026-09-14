@@ -385,10 +385,18 @@ def dedup_aggregators():
         local = os.path.join(root, "jobs", n)
         if low and not os.path.exists(local): os.makedirs(os.path.dirname(local), exist_ok=True); r2.get_file(f"exports/{date_name}/jobs/{n}", local)
         tmpf = local + ".dedup"
-        con.execute(f"""COPY (SELECT d.* FROM read_parquet('{local}') d
-                        WHERE d.tier = 'first_party' OR EXISTS (SELECT 1 FROM winners w WHERE w.ats = d.ats AND w.slug = d.slug AND w.id = d.id)
-                        QUALIFY row_number() OVER (PARTITION BY d.ats, d.slug, d.id ORDER BY d.first_seen_at) = 1)
-                        TO '{tmpf}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 20000)""")  # one row per key: a board's snapshot can carry a job twice (2026-09-12)
+        # One row per key (a board's snapshot carried a job twice, 2026-09-12). Found on the key columns alone: a window
+        # over the whole wide part ran DuckDB out of its cap (2026-09-14). Rare since the snapshot writer's fix.
+        extra = [r[0] for r in con.execute(f"""SELECT file_row_number FROM (SELECT file_row_number, row_number() OVER (PARTITION BY ats, slug, id ORDER BY first_seen_at) AS rn
+                                               FROM read_parquet('{local}', file_row_number=true)) WHERE rn > 1""").fetchall()]
+        if extra:
+            print(f"  {n}: {len(extra)} duplicate-key row(s) dropped", flush=True)
+            src = f"read_parquet('{local}', file_row_number=true) d"; cols = "d.* EXCLUDE (file_row_number)"; drop = f" AND d.file_row_number NOT IN ({', '.join(str(x) for x in extra)})"
+        else:
+            src = f"read_parquet('{local}') d"; cols = "d.*"; drop = ""
+        con.execute(f"""COPY (SELECT {cols} FROM {src}
+                        WHERE (d.tier = 'first_party' OR EXISTS (SELECT 1 FROM winners w WHERE w.ats = d.ats AND w.slug = d.slug AND w.id = d.id)){drop})
+                        TO '{tmpf}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 20000)""")
         os.replace(tmpf, local)
         kept += con.execute(f"SELECT count(*) FILTER (tier = 'aggregator') FROM read_parquet('{local}')").fetchone()[0]
         if publish: r2.put_file(f"exports/{date_name}/jobs/{n}", local, "application/octet-stream")
