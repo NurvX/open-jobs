@@ -129,6 +129,20 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-14): the third cloud night, two interventions, 11.5 h
+
+The 2026-09-13 consolidation ran 19:18 (restart 20:15 after a NameError in the new `--ndjson-only` pass and a
+Docker Desktop disk reset) to 06:44 local: 6,811,344 postings (6,670,670 the day before; net growth is settling
+near +135k/day as the dark backfill drains), 12,647 group files (79 GB), head flipped 10:15 UTC, feed 8ef452c2
+(268,693 upserts, 110,740 removes) streamed in the cloud, archive 28.47 GB. Fresh governmentjobs and jobscore
+exports for the first time since the 10th; vanished boards down from 214 to 134. Two interventions: the dedup
+round's one-row-per-key rule was a window over the wide part and ran DuckDB out of its cap (now found on the key
+columns alone; it dropped 1,316 duplicate rows the old snapshot writer had left), rerun by hand on a worker and the
+chain resumed from diff; and my laptop's Docker Desktop VM disk had filled (268 GB) and went read-only before the
+first deploy of the evening (reset; the deploy script now prunes the build cache). Parquet 4.3 h (workers 2.1 to
+4.3 h), diff 21 min, ledger 53 s, tree 2 h 46 min with pass 2 first try, estimators 1 h 48 min, finalize 14 s
+without the flat mirror, history 13 s, feed 7 min, archive 21 min, retention 9 s.
+
 ## Status (2026-09-13): the second cloud night, and the first with a ✅ from the container itself
 
 The 2026-09-12 consolidation ran in the cloud from 23:05 to 15:08 local (16 h): 6,669,472 postings (6,322,291 the
