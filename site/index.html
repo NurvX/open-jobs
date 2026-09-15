@@ -1101,4 +1101,11 @@ function makeLocparse(L) {
   function saveLocal() { try { localStorage.setItem(LS, JSON.stringify({ title: $('#title').value, loc: $('#loc').value, blurb: $('#blurb').value, labels: LABELS })); } catch {} }
   try {
     const s = JSON.parse(localStorage.getItem(LS) || 'null');
-    if (s) { $('#title').value = s.title || ''; $('#loc').value = s.loc || 
+    if (s) { $('#title').value = s.title || ''; $('#loc').value = s.loc || ''; $('#blurb').value = s.blurb || ''; Object.assign(LABELS, s.labels || {}); }
+  } catch {}
+  for (const k of ['title', 'loc', 'blurb']) if (qs.get(k)) $('#' + (k === 'loc' ? 'loc' : k)).value = qs.get(k);
+  if (qs.get('go') === '1') $('#f').requestSubmit();
+})();
+</script>
+</body>
+</html>
