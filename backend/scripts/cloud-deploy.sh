@@ -15,6 +15,19 @@ print(sys.argv[1] or "chain", c["label"]) if c and st in ("running","healthy") e
   if [ -n "$busy" ] && [ "$1" != "--force" ]; then echo "REFUSED: a deploy rolls over running containers and would kill:"; echo "$busy"; echo "wait for it, or cloud-deploy.sh --force"; exit 2; fi
   # Docker Desktop's VM disk filled with build cache after a day of deploys (189 GB on 2026-09-13; the VM went
   # read-only and had to be reset). Keep 30 GB of recent cache and drop dangling images before every build.
+  # The search page ships with every deploy: refuse if any of its inline scripts fails to compile (a truncated tail
+  # shipped for 2.5 days on 2026-09-12; the main script never closed and no handler was attached).
+  python3 - <<'PY' || { echo "REFUSED: site/index.html has a broken inline script"; exit 3; }
+import re, subprocess, sys, tempfile
+html = open("../site/index.html").read()
+bodies = re.findall(r"<script>(.*?)</script>", html, re.S)
+if len(bodies) < 2 or not html.rstrip().endswith("</html>"): sys.exit("expected two closed <script> blocks and a closing </html>")
+for i, b in enumerate(bodies):
+    f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write(b); f.close()
+    r = subprocess.run(["node", "--check", f.name], capture_output=True, text=True)
+    if r.returncode: sys.exit(f"script {i}: {r.stderr[:300]}")
+print(f"site check ok: {len(bodies)} scripts compile")
+PY
   docker builder prune -f --keep-storage 30GB > /dev/null 2>&1 || true; docker image prune -f > /dev/null 2>&1 || true
   BUILD="$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"; echo "$BUILD" > scripts/BUILD; echo "build id $BUILD"
   npx wrangler deploy > /tmp/cloud-deploy.out 2>&1; rc=$?
