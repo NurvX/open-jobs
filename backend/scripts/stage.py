@@ -239,7 +239,7 @@ elif a.stage == "parquet":
                     r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", data=body, headers=hdr), timeout=60))
                     if not r.get("started"): record(False, f"worker {i} did not start"); sys.exit(f"worker {i} did not start: {r}")
                     starts[i] = time.time() * 1000; print(f"  worker {i}: {' '.join(wargs)[:150]}", flush=True)
-                done = {}
+                done = {}; restarts = {}
                 while len(done) < len(worker_args):
                     time.sleep(60)
                     for i in starts:
@@ -250,6 +250,20 @@ elif a.stage == "parquet":
                             except Exception as e:
                                 print(f"  worker {i}: status poll failed ({str(e)[:100]}); retry {attempt + 1}/5", flush=True); time.sleep(15)
                         if st is None: continue
+                        # The platform can lose a worker's container outright ("Network connection lost", 2026-09-15): the journal
+                        # gets an error event and never a stop, and this loop would wait forever. Restart the same slice; the
+                        # same-day resume skips what it already published. Twice at most, then it counts as failed.
+                        lost = [e for e in st.get("journal", []) if e.get("ev") == "error" and e.get("t", 0) > starts[i]]
+                        if lost and not st.get("current") is None and (st.get("state") or {}).get("status") not in ("running", "healthy") and not [e for e in st.get("journal", []) if e.get("ev") == "stop" and e.get("t", 0) > starts[i]]:
+                            restarts[i] = restarts.get(i, 0) + 1
+                            if restarts[i] > 2: done[i] = 137; print(f"  worker {i}: container lost {restarts[i] - 1} times ({lost[-1].get('message')}); giving up", flush=True); continue
+                            print(f"  worker {i}: container lost ({lost[-1].get('message')}); restarting its slice ({restarts[i]}/2)", flush=True)
+                            body = json.dumps({"args": worker_args[i], "env": {"EXPORT_DIR": export_local, "SNAPSHOT_SOURCE": "r2"}, "label": f"{round_label} {i} (restart {restarts[i]})"}).encode()
+                            try:
+                                r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", data=body, headers=hdr), timeout=60))
+                                if r.get("started"): starts[i] = time.time() * 1000
+                            except Exception as e: print(f"  worker {i}: restart failed ({str(e)[:100]})", flush=True)
+                            continue
                         stops = [e for e in st.get("journal", []) if e.get("ev") == "stop" and e.get("t", 0) > starts[i]]
                         if stops:
                             done[i] = stops[-1].get("exitCode"); tail = ((st.get("lastOutput") or {}).get("text") or "").strip().splitlines()[-3:]
