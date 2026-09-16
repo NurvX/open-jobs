@@ -129,6 +129,37 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-16): the fourth cloud night, one lost worker, 13.4 h, and a lesson about "lost"
+
+The 2026-09-14 consolidation ran 12:37 UTC on the 15th to 02:02 UTC on the 16th (08:37 to 22:02 local):
+6,913,710 postings in the export (6,811,344 the night before; +388,837 -258,794 ~42,308 in the diff, 27,920 carried
+from 166 vanished boards), 3,593,134 distinct vectors in the tree, 12,644 group files (80 GB), head flipped 01:18
+UTC, feed d605f94e (431,145 upserts, 258,794 removes), archive 29.01 GB, ledger 9,298,367 postings ever recorded.
+One intervention: worker 2's object reported "Network connection lost" at 14:10 UTC and the coordinator (before
+2a9568a) would have waited forever, so I restarted the slice by hand; my first restart carried an empty `--ats`
+(read off the coordinator's truncated echo of the command) and was stopped in seconds, which the coordinator
+recorded as exit 143 and failed the stage on when the last worker finished five hours later. The dedup round ran by
+hand on worker 0 (33 min; aggregator tier 5,723,648 -> 3,320,270 after dedup against first-party boards) and the
+chain resumed from diff. Workers: 0 in 94 min (workday alone), 1 in 227 min, 2 (restart) in 209 min, 3 in 389
+min; the slices are byte-balanced on input, and dark parts plus paycom (125k jobs in 42 min: long bodies) made
+worker 3 the long pole. Diff 29 min, ledger 77 s, tree 3 h 07 min (load 15 min, PCA 73 s, split 24 min for 24,339
+nodes, the label pass 85 min, fill 8.5 min for 3,346,759 aggregator rows, checkpoint 35 s, staging 19 min, group
+files 52 min), estimators 1 h 57 min, finalize 18 s, history 17 s, feed 16 min, archive 27 min, retention 12 s.
+
+The lesson. During the tree stage the chain object logged "Network connection lost" and its state flipped to
+stopped; the relay called the run dead, the checkpoint prefix was empty, and I posted a chain from tree. The
+container was alive the whole time: the wrapper's two-minute output posts kept landing (host lines at 21:01 and
+21:03 after the 20:59 error), and the library's `start()` takes a fast path when the container is running, so my
+post started nothing and only relabeled `current`. The same event fired three more times that night (23:50, 00:17,
+00:47) and the process never died; the run finished and `onStop` fired normally. So: a "Network connection lost"
+error event is the object losing the container's stream, not the container dying. The only evidence of death is
+the posts stopping. Fixed in 3485aa6: the fan-out counts a worker as lost only when its posts have been silent
+for 6 min (and takes the wrapper's final post, a real exit code, as the exit when no stop event was recorded); the
+object refuses a new start while interim posts are fresh, naming the reason. Whether worker 2 in the morning was
+truly lost is unknown: its restart ran under the old rule and the same-day skip kept the parts consistent either
+way. The relay now keys STALE on post age, not object state. The label pass (exemplars per node: a small k-means
+plus random reads into the 11 GB memmap, single-threaded) is the tree's slowest single step and is queued below.
+
 ## Status (2026-09-14): the third cloud night, two interventions, 11.5 h
 
 The 2026-09-13 consolidation ran 19:18 (restart 20:15 after a NameError in the new `--ndjson-only` pass and a
@@ -200,7 +231,7 @@ land in two parts (keyset paging now); the unlock stage keeps the freeze while a
 flat mirror is off by default (the Worker resolves flat ids through the head). Queued: delete the stale flat copies
 (groups/<id>.json, ~76 GB) once nobody reads them straight from the bucket (the Worker resolves flat ids through the head;
 tonight proved it); work stealing in the parquet fan-out; the salary extractor across the cores; an estimators step
-the chain fans out itself; a cron trigger for the nightly chain.
+the chain fans out itself; a cron trigger for the nightly chain. Added 2026-09-16: the tree's label pass across the cores (85 min single-threaded: per-node k-means plus random reads into the memmap; the nodes are independent), and a run-object endpoint that returns "alive" from post age so relays and the coordinator share one rule.
 
 ## Status (2026-09-10)
 
