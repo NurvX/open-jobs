@@ -36,6 +36,12 @@ export class Consolidate extends Container<Env> {
 		const cur = await this.ctx.storage.get<Current>("current");
 		const st = await this.getState();
 		if (cur && (st.status === "running" || st.status === "healthy")) return { started: false, reason: `busy: ${cur.label} since ${new Date(cur.startedAt).toISOString()}` };
+		// "Network connection lost" is this object losing the container's stream, not the process dying: the state flips to
+		// stopped while the wrapper keeps posting every two minutes (four times in one night, 2026-09-15/16). While those
+		// interim posts are fresh the process is alive; a start here would only relabel it (the library's start is a no-op
+		// on a running container), so refuse and say why.
+		const lo = await this.ctx.storage.get<{ t: number; code: number; text: string }>("lastOutput");
+		if (cur && lo && lo.code === -1 && lo.t > cur.startedAt && Date.now() - lo.t < 6 * 60 * 1000) return { started: false, reason: `busy: ${cur.label} still posting output (${Math.round((Date.now() - lo.t) / 1000)} s ago) although the object's stream dropped; wait for its exit or POST /run/stop` };
 		await this.ctx.storage.put("current", { label, startedAt: Date.now(), args } satisfies Current);
 		await this.journal({ t: Date.now(), ev: "start", label });
 		// Wrapped so the process's own output comes back to this object (POST /run/output) with its exit code: the platform's

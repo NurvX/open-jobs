@@ -239,7 +239,7 @@ elif a.stage == "parquet":
                     r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", data=body, headers=hdr), timeout=60))
                     if not r.get("started"): record(False, f"worker {i} did not start"); sys.exit(f"worker {i} did not start: {r}")
                     starts[i] = time.time() * 1000; print(f"  worker {i}: {' '.join(wargs)[:150]}", flush=True)
-                done = {}; restarts = {}
+                done = {}; restarts = {}; noted = set()
                 while len(done) < len(worker_args):
                     time.sleep(60)
                     for i in starts:
@@ -250,21 +250,32 @@ elif a.stage == "parquet":
                             except Exception as e:
                                 print(f"  worker {i}: status poll failed ({str(e)[:100]}); retry {attempt + 1}/5", flush=True); time.sleep(15)
                         if st is None: continue
-                        # The platform can lose a worker's container outright ("Network connection lost", 2026-09-15): the journal
-                        # gets an error event and never a stop, and this loop would wait forever. Restart the same slice; the
-                        # same-day resume skips what it already published. Twice at most, then it counts as failed.
+                        # A "Network connection lost" error event is the object losing its output stream, not the process dying:
+                        # the chain container posted for hours after four of them (2026-09-15/16). A worker counts as lost only
+                        # when its wrapper's two-minute output posts have stopped as well (none for 6 min); then the same slice
+                        # is restarted, the same-day resume skipping what it already published. Twice at most, then it failed.
+                        # With the stream gone the object may never record a stop, so the wrapper's final post (a real exit
+                        # code, not the interim -1) also ends the wait.
+                        now = time.time() * 1000; lo = st.get("lastOutput") or {}
+                        stops = [e for e in st.get("journal", []) if e.get("ev") == "stop" and e.get("t", 0) > starts[i]]
+                        if not stops and lo.get("t", 0) > starts[i] and lo.get("code") not in (-1, None):
+                            done[i] = lo.get("code"); tail = (lo.get("text") or "").strip().splitlines()[-3:]
+                            print(f"  worker {i} exited {done[i]} after {(now - starts[i]) / 60000:.0f} min (final output post; no stop event recorded): " + " | ".join(t[:100] for t in tail), flush=True)
+                            continue
                         lost = [e for e in st.get("journal", []) if e.get("ev") == "error" and e.get("t", 0) > starts[i]]
-                        if lost and not st.get("current") is None and (st.get("state") or {}).get("status") not in ("running", "healthy") and not [e for e in st.get("journal", []) if e.get("ev") == "stop" and e.get("t", 0) > starts[i]]:
+                        quiet = max(lo.get("t", 0), starts[i]) < now - 6 * 60 * 1000
+                        if lost and quiet and not stops and (st.get("state") or {}).get("status") not in ("running", "healthy"):
                             restarts[i] = restarts.get(i, 0) + 1
                             if restarts[i] > 2: done[i] = 137; print(f"  worker {i}: container lost {restarts[i] - 1} times ({lost[-1].get('message')}); giving up", flush=True); continue
-                            print(f"  worker {i}: container lost ({lost[-1].get('message')}); restarting its slice ({restarts[i]}/2)", flush=True)
+                            print(f"  worker {i}: container lost ({lost[-1].get('message')}; no output post for {(now - max(lo.get('t', 0), starts[i])) / 60000:.0f} min); restarting its slice ({restarts[i]}/2)", flush=True)
                             body = json.dumps({"args": worker_args[i], "env": {"EXPORT_DIR": export_local, "SNAPSHOT_SOURCE": "r2"}, "label": f"{round_label} {i} (restart {restarts[i]})"}).encode()
                             try:
                                 r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", data=body, headers=hdr), timeout=60))
                                 if r.get("started"): starts[i] = time.time() * 1000
                             except Exception as e: print(f"  worker {i}: restart failed ({str(e)[:100]})", flush=True)
                             continue
-                        stops = [e for e in st.get("journal", []) if e.get("ev") == "stop" and e.get("t", 0) > starts[i]]
+                        elif lost and not quiet and not stops and i not in noted:
+                            noted.add(i); print(f"  worker {i}: object reported '{lost[-1].get('message')}' but the process still posts output; waiting", flush=True)
                         if stops:
                             done[i] = stops[-1].get("exitCode"); tail = ((st.get("lastOutput") or {}).get("text") or "").strip().splitlines()[-3:]
                             print(f"  worker {i} exited {done[i]} after {(time.time() * 1000 - starts[i]) / 60000:.0f} min: " + " | ".join(t[:100] for t in tail), flush=True)
