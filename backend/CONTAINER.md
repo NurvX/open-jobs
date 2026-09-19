@@ -129,6 +129,23 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-19): the fifth cloud night, zero interventions, 12.5 h
+
+The 2026-09-18 consolidation ran 00:20 to 12:51 UTC on the 19th (20:20 to 08:51 local) with nobody touching it:
+the first night the chain did everything itself, including the dedup round the coordinator now runs on worker 0
+after the last slice (31 min, 39.6 -> 30.7 GB). Four days since the last export, so the numbers are four days of
+change: 6,941,630 -> 7,334,821 postings (+1,037,346 -633,074 ~99,661; 11,081 carried from 215 vanished boards),
+3,620,891 distinct vectors, 13,054 group files (84.8 GB), head flipped 11:53 UTC, feed 4e7ead74 (1,137,007
+upserts, 633,074 removes), archive 30.75 GB, ledger 10,266,666 postings ever recorded (past 10M on the lifetime
+count; 7.35M open). Dark was 26,394,096 rows in 15 parts. Workers: 0 in 116 min (workday + four dark parts), 1 in
+211, 2 in 237, 3 in 361 (dark parts plus greenhouse and paycom; the long pole for the third night running, so the
+byte balance should weigh dark parts by their share, queued). Parquet 6 h 35 min, diff 26 min (36 parts, 8 GB),
+ledger 61 s, tree 2 h 39 min (load 12 min, split 21 min, label pass 68 min, fill 7 min, checkpoint 19 s, staging
+17 min, group files 48 min), estimators 1 h 52 min, finalize 14 s, history 5 s, feed 37 min, archive 21 min,
+retention 11 s. No "Network connection lost" events this time. The laptop relays lost their link for 2.5 h in the
+middle and caught up; the cloud did not notice. One thing seen: worker 0 spent 20 min after its last part in the
+end-of-slice summary scan (reads its published parquet back from the bucket); worth a cheaper summary.
+
 ## Status (2026-09-16): the fourth cloud night, one lost worker, 13.4 h, and a lesson about "lost"
 
 The 2026-09-14 consolidation ran 12:37 UTC on the 15th to 02:02 UTC on the 16th (08:37 to 22:02 local):
