@@ -367,7 +367,10 @@ All admin calls take `authorization: Bearer $(cat backend/admin_token.txt)`; `W=
 rejects a layer, which it did when the uplink was busy), polls `wrangler containers info` until the app's image is
 the pushed digest and no rollout is active, stops the idle instance (the keep-alive would otherwise keep the old one
 answering until the rollout reaches it), waits 75 s, and asks the container for its build id until it
-matches. `cloud-deploy.sh --wait` does only the wait-and-verify half. Never poll a rollout by starting the container. **A deploy is a rollout that stops every running instance of the old image** (the journal shows
+matches. `cloud-deploy.sh --wait` does only the wait-and-verify half. After the image is live it runs
+`scripts/site-smoke.js` (headless Chrome: the first example search must reach "Done" with jobs rendered; exit 4 if
+not). Run the smoke by hand after every cutover too: the 2026-09-14 tree appended chunk nodes and every search died
+at the tree walk for 3.5 days, on a page whose scripts compiled fine. Never poll a rollout by starting the container. **A deploy is a rollout that stops every running instance of the old image** (the journal shows
 "Runtime signalled the container to exit due to a new version rollout"): it killed take 3 of the 2026-09-11 chain and
 its four workers mid-stage. The script now refuses while any run object is busy (`--force` overrides); deploy between
 runs, or accept the restart and resume `from <stage>` after unlock.

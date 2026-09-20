@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.3.0",
+    "puppeteer-core": "^24.43.1",
     "typescript": "^5.5.2",
     "wrangler": "^4.126.0"
   },

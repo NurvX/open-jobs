@@ -59,7 +59,7 @@ for i in $(seq 1 4); do
     live=$(curl -s -H "authorization: Bearer $T" "$W/run" | python3 -c "import json,sys; d=json.load(sys.stdin); lo=d.get('lastOutput') or {}; t=lo.get('text') or ''; ls=[l for l in t.strip().splitlines() if l.strip() and not l.startswith('[host')]; print(ls[-1] if ls and lo.get('t',0) > $t_exec else '')" 2>/dev/null || echo '')
     [ -n "$live" ] && break
   done
-  [ "$live" = "$BUILD" ] && { echo "image $BUILD live"; exit 0; }
+  [ "$live" = "$BUILD" ] && { echo "image $BUILD live"; echo "live search smoke (scripts/site-smoke.js):"; node scripts/site-smoke.js && exit 0; echo "DEPLOYED BUT THE LIVE SEARCH DOES NOT COMPLETE: fix the page and deploy again"; exit 4; }
   echo "  $(date +%T) container reports '${live:-no answer in 3 min}'; stopping and waiting 60 s"
   curl -s -X POST -H "authorization: Bearer $T" "$W/run/stop" >/dev/null || true; sleep 60
 done
