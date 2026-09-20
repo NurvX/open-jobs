@@ -744,9 +744,13 @@ function makeLocparse(L) {
       await pool(inner, 16, async (f) => {
         if (CNT[f.id] <= SUBTREE_FETCH) await fetchRows(f.id, CNT[f.id]);
         else await Promise.all(T[f.id].children.map((c) => fetchRows(c, 1)));
+        // A subtree's rows are contiguous only in DFS order; the chunks of an oversized leaf are appended at the end
+        // of the node list (2026-09-19: 339 such leaves, and the walk died on their missing rows). Fetch what is left.
+        const missing = T[f.id].children.filter((c) => !ROWS.has(c));
+        if (missing.length) await Promise.all(missing.map((c) => fetchRows(c, 1)));
       });
       const next = [];
-      for (const f of inner) for (const c of T[f.id].children) next.push({ id: c, sim: dot(ROWS.get(c), q) });
+      for (const f of inner) for (const c of T[f.id].children) { const row = ROWS.get(c); if (!row) throw new Error(`no centroid row for group ${c}`); next.push({ id: c, sim: dot(row, q) }); }
       next.sort((a, b) => b.sim - a.sim);
       frontier = next.slice(0, beam);
     }
