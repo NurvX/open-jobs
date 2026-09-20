@@ -129,6 +129,29 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-20): the sixth cloud night, zero interventions, 10.5 h, and the search page back
+
+The 2026-09-19 consolidation ran 00:40 to 11:09 UTC on the 20th with nobody touching it: 7,345,902 -> 7,405,788
+postings (+320,699 -250,093 ~33,155; 10,720 carried from 212 vanished boards), 3,624,739 distinct vectors, 12,859
+group files (85.5 GB; 341 oversized leaves split into 874 chunks), head flipped 10:34 UTC, feed faa2169a (353,854
+upserts, 250,093 removes), archive 31.04 GB, ledger 10,541,162 ever. The fastest cloud night so far: parquet
+4 h 55 min (workers 97 / 173 / 207 / 261 min; the dedup round 31 min), diff 21 min, ledger 80 s, tree 2 h 47 min
+(label pass 72 min, fill 8 min, staging 17 min, group files 53 min), estimators 1 h 50 min, finalize 14 s, history
+8 s, feed 13 min, archive 22 min, retention 10 s. The post-age rule from 3485aa6 fired once: worker 0's object
+reported "Container connectivity was lost" at 01:56 UTC while the wrapper kept posting; the coordinator printed
+"the process still posts output; waiting" and the worker published its last part 90 s later. Under the old rule
+that slice would have been restarted mid-write.
+
+Before the run, the search page was found dead and fixed (4523df0): since the 2026-09-14 cutover every search
+had died at "finding the nearest groups" with "Cannot read properties of undefined (reading 'length')". The tree
+appends the chunks of an oversized leaf at the end of the node list, so a small subtree's centroid rows are no
+longer contiguous; the page's beam walk fetched rows by range, never loaded the chunk rows, and the dot product
+hit an undefined row. The walk now fetches any child row the range missed. The page's inline scripts compiled
+the whole time, which is why the deploy guard did not catch it: `scripts/site-smoke.js` (puppeteer-core, headless
+Chrome) now runs the first example search and requires "Done" with jobs rendered, `cloud-deploy.sh` runs it after
+the image is live (exit 4 on failure), and it is run by hand after every cutover (tonight: Done, 2,768 jobs from
+4 groups on the new tree). The 3.5-day outage showed in the counters as searches near zero with page loads normal.
+
 ## Status (2026-09-19): the fifth cloud night, zero interventions, 12.5 h
 
 The 2026-09-18 consolidation ran 00:20 to 12:51 UTC on the 19th (20:20 to 08:51 local) with nobody touching it:
