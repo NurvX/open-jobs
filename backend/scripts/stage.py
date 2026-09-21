@@ -97,6 +97,7 @@ if a.stage == "unlock":
             if st.get("current") and (st.get("state") or {}).get("status") in ("running", "healthy"): busy.append(i)
         except Exception: pass
     if busy: print(f"snapshot freeze kept: worker(s) {busy} still running (it expires on its own)", flush=True)
+    elif os.environ.get("UNLOCK_KEEP_FREEZE") == "1": print("snapshot freeze kept: the parquet stage failed and a resume must see the same snapshots (it expires on its own)", flush=True)
     else:
         try: lock_call("thaw", {"holder": lock_holder(), "force": True}); print("snapshot writes thawed", flush=True)  # a killed or failed parquet stage leaves the freeze on
         except Exception as e: print(f"WARNING: thaw failed: {e}", flush=True)

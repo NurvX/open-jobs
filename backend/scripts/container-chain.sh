@@ -14,7 +14,10 @@ run() { echo "--- $1 $(date -u '+%H:%M:%S')"; /usr/local/bin/uv run --script /ap
 echo "=== container consolidation $DATE from ${STAGES[0]} (cloud) $(date -u '+%H:%M:%S')"
 for st in "${STAGES[@]}"; do
   if ! run "$st"; then
-    case "$st" in ledger|history|feed|archive) echo "WARNING: $st failed; continuing";; *) echo "FAILED at $st"; run unlock || true; run report || true; exit 1;; esac  # unlock: a resume runs in a fresh container with a new holder id
+    # unlock: a resume runs in a fresh container with a new holder id. A parquet failure keeps the snapshot freeze on (it
+    # expires on its own): thawing let boards rewrite snapshots in the 14 min before the resume, the dark pack layout
+    # changed, and every published dark part was rebuilt (2026-09-21, four hours lost).
+    case "$st" in ledger|history|feed|archive) echo "WARNING: $st failed; continuing";; *) echo "FAILED at $st"; [ "$st" = parquet ] && export UNLOCK_KEEP_FREEZE=1; run unlock || true; run report || true; exit 1;; esac
   fi
 done
 run report || true; echo "=== done $(date -u '+%H:%M:%S')"
