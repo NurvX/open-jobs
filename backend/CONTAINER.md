@@ -129,6 +129,34 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-21): the seventh cloud night, slow R2, two interventions, 14.6 h
+
+The 2026-09-20 consolidation ran 02:35 to 17:14 UTC on the 21st: 7,416,508 -> 7,378,672 postings (+182,550
+-163,322 ~18,250), 3,617,631 distinct vectors, 12,887 group files (85.7 GB), head flipped 15:31 UTC, feed 371cffa4
+(200,800 upserts, 163,322 removes), archive 31.12 GB, ledger 10,673,975 ever. R2 reads were slow all day from the
+container's region: worker 3's dark part 11 timed out once and took 43 min on the retry, greenhouse took 55 min
+(10 the night before), the feed took 75 min (13). Two interventions, both fixed the same day:
+
+1. Worker 3 exited 1 after 6.7 h with its whole slice published: the end-of-slice summary table (a per-ATS count
+   read back from every jobs parquet in the bucket) timed out on another worker's file. The tables are for the log
+   only; `show()` now prints "summary skipped" on a bucket error (75f9440).
+2. The resume from parquet set out to rebuild all 15 dark parts: the failure path had thawed snapshot writes, boards
+   rewrote snapshots in the 14 min before the resume, and the recomputed pack layout no longer matched the sidecars.
+   Stopped the four workers and the coordinator 60 s into the first rebuild (no rebuilt part reached the bucket:
+   every dark part still dated 03:09 to 06:24 UTC), released the lock, ran the dedup round by hand on worker 0
+   (18 min; aggregator 6,048,410 -> 3,770,524) and resumed from diff. A parquet failure now keeps the freeze on so
+   a resume inside the TTL sees the same snapshots (ff1bd8b). The chain's stages after that ran without a hand.
+
+The diff carried 57,105 rows from 242 vanished boards (22 really empty), against ~11k on a normal night: three dark
+job boards are 55k of it (iitjobs.com 44,597; scotjobsnet.co.uk 8,412; meinestelle.de 2,100), the crawler still
+holds them open with status ok, and "our pull missed it": their snapshots were not in the parquet read. The carry
+put them in the export and the tree, so nothing was lost; if it repeats, look at multi-part snapshots of very large
+dark boards under the freeze. Timings: parquet 6 h 44 min to the first failure (workers 93 / 179 / 201 / 401 min),
+dedup 18 min by hand, diff 19 min, ledger 63 s, tree 2 h 45 min (label pass 66 min), estimators 2 h 03 min, finalize
+138 s (slow bucket), history 7 s, feed 75 min, archive 28 min, retention 14 s. Docker Desktop was not running on the
+laptop for the first deploy attempt (the CLI symlink pointed at an unmounted DMG); `open -a Docker` and a symlink to
+/Applications fixed it, noted in the runbook.
+
 ## Status (2026-09-20): the sixth cloud night, zero interventions, 10.5 h, and the search page back
 
 The 2026-09-19 consolidation ran 00:40 to 11:09 UTC on the 20th with nobody touching it: 7,345,902 -> 7,405,788
