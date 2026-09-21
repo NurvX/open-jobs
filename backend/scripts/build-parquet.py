@@ -404,7 +404,10 @@ def dedup_aggregators():
     print(f"aggregator tier: {before[0]:,} -> {kept:,} postings after dedup against first-party boards and across job boards ({len(names)} part file(s){'; re-published' if publish else ''})", flush=True)
 
 def show(sql):
-    con.sql(sql).show(max_rows=50, max_width=200)
+    # The end-of-run tables are for the log only: a bucket timeout here must not fail a slice whose parts are already
+    # published (2026-09-21: worker 3 exited 1 on the per-ATS count after 6.7 h of good work; the resume cost an hour).
+    try: con.sql(sql).show(max_rows=50, max_width=200)
+    except Exception as e: print(f"summary skipped ({str(e)[:160]})", flush=True)
 
 B = os.path.join(root, "boards", "*.parquet")
 J = os.path.join(root, "jobs", "*.parquet")
