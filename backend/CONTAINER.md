@@ -129,6 +129,34 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-24): the eighth cloud night, two bad hosts, 18.7 h, and four fixes
+
+The 2026-09-23 consolidation ran 04:47 to 23:29 UTC on the 23rd: 7,435,736 -> 7,319,371 postings over three days
+(+351,079 -406,791 ~51,932), 3,622,547 distinct vectors, 12,775 group files (84.2 GB), head flipped 22:41 UTC,
+feed e6b1ead1 (403,011 upserts, 406,791 removes), archive 30.89 GB, ledger 10,937,191 ever. The night's story is
+two Durable Objects whose containers sit on bad hosts. A DO's container lands on the same host every time.
+
+- worker-3's host read the bucket ten times slower than the others (three nights running) and sat three hours at
+  load 0 on the dark pre-scan; a restart under the same object landed on the same host. The slice moved to worker-4
+  (`PARQUET_WORKER_IDS`, a02df63, picks the objects; tomorrow: 0,1,2,5 with the chain itself on worker-4).
+- the chain's own object (`consolidate`) was three times slower at everything, disk and CPU included (PCA 183 s
+  against 60, the split 59 min against 20). The stages from tree onward ran on worker-4's container by posting
+  `container-chain.sh tree <date>` to `/run/worker/4`: every hand-off is in the bucket, so any container can run any
+  stage. The run tap for that run is `/run/worker/4`, not `/run`.
+
+Fixes, all deployed the same day: the parquet stage keeps the snapshot freeze when the fan-out fails (86cf9f0; the
+unlock-stage fix of the 21st ran after the stage's own thaw, and the 70 s gap moved the dark layout by 8,839 rows);
+a resume completes a partially published source from the published parts instead of rebuilding it (2ab8cf7,
+coverage from the boards files 211688f: the job rows made every filtered-out board look uncovered); footer values
+are decoded per file (0fc8791; the "utf-8 codec" error turned out to be DuckDB's binding choking on a binary R2
+error body, not a bad footer); the diff treats a board present in today's boards file as read, so the five dark
+job boards whose rows the aggregator rule filters out entirely (iitjobs.com alone 112k open) stop being carried
+back in as 60k stale rows a night (6910403). Also: pass 2 died once on an R2 502 and once with the container
+(nine minutes of silence after "Network connection lost": the first real loss since the post-age rule, read
+correctly); both resumed from the checkpoint. The boards files of the leftover parts were rewritten by hand to
+drop 10,908 rows duplicating the original parts (12,446 distinct dark boards, 12,446 rows). Timings on the good
+host: tree 63 min from the checkpoint, estimators 2 h 19 min, feed 17 min, archive 31 min.
+
 ## Status (2026-09-21): the seventh cloud night, slow R2, two interventions, 14.6 h
 
 The 2026-09-20 consolidation ran 02:35 to 17:14 UTC on the 21st: 7,416,508 -> 7,378,672 postings (+182,550
