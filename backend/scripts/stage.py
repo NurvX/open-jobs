@@ -221,6 +221,11 @@ elif a.stage == "parquet":
         lock_call("freeze", {"holder": lock_holder(), "ttlMs": LOCK_TTL_MS}); print("snapshot writes frozen for the read", flush=True)
     try:
         nw = int(os.environ.get("PARQUET_WORKERS", "0") or 0)
+        # PARQUET_WORKER_IDS picks the worker objects (default 0..nw-1): a Durable Object's container lands on the same
+        # host every time, and worker-3's host read the bucket ten times slower than the others on three nights
+        # (2026-09-21 to 23: hours on the dark pre-scan). Slot i of the fan-out runs on object ids[i].
+        ids = [int(x) for x in os.environ.get("PARQUET_WORKER_IDS", "").split(",") if x.strip()] or list(range(nw))
+        if nw and len(ids) != nw: sys.exit(f"PARQUET_WORKER_IDS lists {len(ids)} objects for PARQUET_WORKERS={nw}")
         if r2_mode and nw > 0 and not a.dry_run:
             # Fan out across worker containers (src/consolidate.ts): dark parts by index modulo, the other sources
             # spread by snapshot bytes; each worker runs build-parquet with its slice; then a second round runs the
@@ -237,9 +242,9 @@ elif a.stage == "parquet":
                 starts = {}
                 for i, wargs in enumerate(worker_args):
                     body = json.dumps({"args": wargs, "env": {"EXPORT_DIR": export_local, "SNAPSHOT_SOURCE": "r2"}, "label": f"{round_label} {i}"}).encode()
-                    r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", data=body, headers=hdr), timeout=60))
+                    r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{ids[i]}", data=body, headers=hdr), timeout=60))
                     if not r.get("started"): record(False, f"worker {i} did not start"); sys.exit(f"worker {i} did not start: {r}")
-                    starts[i] = time.time() * 1000; print(f"  worker {i}: {' '.join(wargs)[:150]}", flush=True)
+                    starts[i] = time.time() * 1000; print(f"  worker {ids[i]}: {' '.join(wargs)[:150]}", flush=True)
                 done = {}; restarts = {}; noted = set()
                 while len(done) < len(worker_args):
                     time.sleep(60)
@@ -247,7 +252,7 @@ elif a.stage == "parquet":
                         if i in done: continue
                         st = None
                         for attempt in range(5):  # a transient read error killed the coordinator mid-round (2026-09-13); the workers ran on
-                            try: st = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", headers=hdr), timeout=60)); break
+                            try: st = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{ids[i]}", headers=hdr), timeout=60)); break
                             except Exception as e:
                                 print(f"  worker {i}: status poll failed ({str(e)[:100]}); retry {attempt + 1}/5", flush=True); time.sleep(15)
                         if st is None: continue
@@ -271,7 +276,7 @@ elif a.stage == "parquet":
                             print(f"  worker {i}: container lost ({lost[-1].get('message')}; no output post for {(now - max(lo.get('t', 0), starts[i])) / 60000:.0f} min); restarting its slice ({restarts[i]}/2)", flush=True)
                             body = json.dumps({"args": worker_args[i], "env": {"EXPORT_DIR": export_local, "SNAPSHOT_SOURCE": "r2"}, "label": f"{round_label} {i} (restart {restarts[i]})"}).encode()
                             try:
-                                r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{i}", data=body, headers=hdr), timeout=60))
+                                r = json.load(urllib.request.urlopen(urllib.request.Request(f"{a.worker}/run/worker/{ids[i]}", data=body, headers=hdr), timeout=60))
                                 if r.get("started"): starts[i] = time.time() * 1000
                             except Exception as e: print(f"  worker {i}: restart failed ({str(e)[:100]})", flush=True)
                             continue
