@@ -332,7 +332,10 @@ for src in ([] if (dedup_only or ndjson_only) else (snap_dirs or snap_r2)):
         # indices the published parts left free (2026-09-23: a 70 s thaw moved the dark layout by 8,839 rows).
         pub = _published_parts(ats) if (publish and not force) else {}
         if pub and not all(i < len(packs) and pub[i] == _pack_sig(packs[i]) for i in pub):
-            urls = [r2.url(f"exports/{date_name}/jobs/{ats}.p{i}.parquet") for i in sorted(pub)]
+            # coverage from the boards files: one row per board in the pack, whether or not any of its rows survived the
+            # export's filters (from the jobs files, a fully filtered board looked uncovered and was rebuilt for nothing:
+            # 6,868 "left" boards in 6 parts on 2026-09-23 where ~1,000 in 3 was the truth)
+            urls = [r2.url(f"exports/{date_name}/boards/{ats}.p{i}.parquet") for i in sorted(pub)]
             for attempt in range(4):
                 try: covered = {r[0] for r in con.execute(f"SELECT DISTINCT slug FROM read_parquet({urls!r}, union_by_name=true)").fetchall()}; break
                 except Exception as e:
