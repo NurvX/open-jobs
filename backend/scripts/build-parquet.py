@@ -251,6 +251,32 @@ def _published_recently(name):
         if prev != pack_sig[name]: print(f"{name:16} published earlier under a different pack layout; rebuilt", flush=True); return False
     return True
 
+def _pack_sig(files):
+    import hashlib as _hl; return _hl.sha256(json.dumps(sorted((f, counts[f]) for f in files)).encode()).hexdigest()
+def _published_parts(ats):
+    """Same-day published parts of a source: {index: sidecar sig or None}."""
+    cut = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=12); out = {}
+    for k, _, _ in r2.list(f"exports/{date_name}/jobs/{ats}.p"):
+        m = re.fullmatch(rf"exports/{re.escape(date_name)}/jobs/{re.escape(ats)}\.p(\d+)\.parquet", k)
+        if not m: continue
+        h = r2.head(k)
+        if not h or not h.get("modified") or h["modified"] < cut: continue
+        try: sig = r2.client.get_object(Bucket=r2.bucket, Key=f"exports/{date_name}/parts/{ats}.p{m.group(1)}.pack")["Body"].read().decode().strip()
+        except Exception: sig = None
+        out[int(m.group(1))] = sig
+    return out
+def _leftover_packs(by_slug, counts, covered, pub, part_rows):
+    """Pack the boards no published part holds; name the packs with the indices the published parts left free."""
+    lpacks, cur, n = [], [], 0
+    for slug in sorted(by_slug):
+        if slug in covered: continue
+        fns = by_slug[slug]; rows = sum(counts[f] for f in fns)
+        if cur and n + rows > part_rows: lpacks.append(cur); cur, n = [], 0
+        cur += fns; n += rows
+    if cur: lpacks.append(cur)
+    free = [i for i in range(len(pub) + len(lpacks) + 1) if i not in pub][:len(lpacks)]
+    return dict(zip(free, lpacks))
+
 for src in ([] if (dedup_only or ndjson_only) else (snap_dirs or snap_r2)):
     if from_r2:
         ats = src; pq = r2.url(f"snapshots/{ats}/*.parquet")
@@ -300,13 +326,26 @@ for src in ([] if (dedup_only or ndjson_only) else (snap_dirs or snap_r2)):
             cur += fns; n += rows
         if cur: packs.append(cur)
         print(f"{ats:16} {total_rows:,} rows -> {len(packs)} parts of <= {PART_ROWS:,}", flush=True)
+        # Same-day resume after the layout moved (snapshots written between takes): the parts already published are a
+        # consistent set cut from the earlier listing, so instead of rebuilding every part under the new layout (or
+        # tearing the set at every boundary), pack only the boards no published part holds and give those packs the
+        # indices the published parts left free (2026-09-23: a 70 s thaw moved the dark layout by 8,839 rows).
+        pub = _published_parts(ats) if (publish and not force) else {}
+        if pub and not all(i < len(packs) and pub[i] == _pack_sig(packs[i]) for i in pub):
+            urls = [r2.url(f"exports/{date_name}/jobs/{ats}.p{i}.parquet") for i in sorted(pub)]
+            for attempt in range(4):
+                try: covered = {r[0] for r in con.execute(f"SELECT DISTINCT slug FROM read_parquet({urls!r}, union_by_name=true)").fetchall()}; break
+                except Exception as e:
+                    if attempt == 3: raise
+                    print(f"{ats:16} bucket read failed ({str(e)[:100]}); retrying in {15 * (attempt + 1)}s", flush=True); time.sleep(15 * (attempt + 1))
+            packs = _leftover_packs(by_slug, counts, covered, pub, PART_ROWS)
+            print(f"{ats:16} {len(pub)} part(s) published earlier under another layout hold {len(covered):,} boards; {sum(1 for s_ in by_slug if s_ not in covered):,} board(s) left -> {len(packs)} part(s) {sorted(packs)}", flush=True)
     else: packs = [None]
-    for pi, files in enumerate(packs):
+    for pi, files in (sorted(packs.items()) if isinstance(packs, dict) else enumerate(packs)):
         if files is not None and not part_selected(pi): continue
         name = ats if files is None else f"{ats}.p{pi}"
         outs = {k: os.path.join(root, k, f"{name}.parquet") for k in ("jobs", "boards")}
-        if files is not None:
-            import hashlib as _hl; pack_sig[name] = _hl.sha256(json.dumps(sorted((f, counts[f]) for f in files)).encode()).hexdigest()
+        if files is not None: pack_sig[name] = _pack_sig(files)
         if files is not None and _published_recently(name):
             print(f"{name:16} published earlier this run; skipped", flush=True); continue
         fileset = None if files is None else set(files)
