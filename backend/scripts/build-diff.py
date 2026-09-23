@@ -96,11 +96,21 @@ con.execute("""CREATE TABLE absent AS
   WHERE NOT EXISTS (SELECT 1 FROM nk n WHERE n.ats=g.ats AND n.slug=g.slug) GROUP BY 1, 2 ORDER BY 3 DESC""")
 absent = con.execute("SELECT ats, slug, old_jobs FROM absent").fetchall()
 
+# A board in today's boards file was read by the pull: no rows in the jobs file means every row was filtered
+# (the aggregator rule, eligibility), not that the pull missed it. Carrying such a board re-injects its stale rows
+# every night while the crawler still holds it open (2026-09-20 to 23: iitjobs.com, 44,597 rows, and four more job
+# boards, ~60k rows a night). Only a board absent from the boards file is a candidate for the crawler question.
+try:
+    present = {(r[0], str(r[1])): r[2] for r in con.execute(f"SELECT ats, slug, max(exported_jobs) FROM read_parquet('{new}/boards/*.parquet', union_by_name=true) GROUP BY 1, 2").fetchall()}
+except Exception as e:
+    print(f"WARNING: could not read today's boards file ({str(e)[:100]}); vanished boards go to the crawler"); present = {}
+
 # ask the crawler which vanished boards are really empty
 token = os.environ.get("ADMIN_TOKEN") or (open("admin_token.txt").read().strip() if os.path.exists("admin_token.txt") else "")
 verdict = {}  # (ats, slug) -> "carry" | "removed"; reason
 def ask(b):
     ats, slug, n = b
+    if (ats, str(slug)) in present: return (ats, slug), ("removed", f"read in full ({present[(ats, str(slug))] or 0:,} rows in the snapshot); every row filtered out of the export")
     try:
         req = urllib.request.Request(f"{a.base}/boards/{ats}/{urllib.parse.quote(slug, safe='')}?ids=_&slim=1", headers={"authorization": f"Bearer {token}", "user-agent": "open-jobs-tools/0.1"})
         with urllib.request.urlopen(req, timeout=60) as r: meta = (json.loads(r.read()) or {}).get("meta") or {}
