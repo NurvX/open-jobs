@@ -273,7 +273,14 @@ for src in ([] if (dedup_only or ndjson_only) else (snap_dirs or snap_r2)):
     # block retries on top: a transient storage error must not cost the night.
     for attempt in range(4):
         try:
-            kv = con.execute(f"SELECT file_name, decode(value) FROM parquet_kv_metadata('{pq}') WHERE decode(key) = 'board_meta'").fetchall()
+            # the footer value comes back raw: one snapshot with a non-UTF-8 board_meta (2026-09-23, dark) must cost
+            # that board its meta row, not the whole source (decode() in SQL raised for the entire scan)
+            kv, _badkv = [], []
+            for fn, raw in con.execute(f"SELECT file_name, value FROM parquet_kv_metadata('{pq}') WHERE decode(key) = 'board_meta'").fetchall():
+                b = bytes(raw)
+                try: kv.append((fn, b.decode("utf-8")))
+                except UnicodeDecodeError: _badkv.append(fn)
+            if _badkv: print(f"{ats:16} WARNING: {len(_badkv)} snapshot(s) with an unreadable board_meta footer, skipped: {', '.join(x.rsplit('/', 1)[-1] for x in _badkv[:5])}", flush=True)
             counts = dict(con.execute(f"SELECT filename, count(*) FROM read_parquet('{pq}', filename=true) GROUP BY 1").fetchall())
             break
         except Exception as e:
