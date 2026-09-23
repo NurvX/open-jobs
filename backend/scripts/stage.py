@@ -294,7 +294,12 @@ elif a.stage == "parquet":
             # others computed winners from torn data). ~40 min single; parallelising it needs pass A published once.
             fan("dedup", [base + ["--dedup-only"]])
         else: run(cmd, env={"EXPORT_DIR": export_local, "SNAPSHOT_SOURCE": "r2" if r2_mode else "local"})
-    finally:
+    except BaseException:
+        # A failed or killed fan-out leaves the freeze on: a hand-restarted slice may still be reading snapshots, and a
+        # resume must see the same snapshot set or the dark pack layout changes and every part is rebuilt
+        # (2026-09-21, 2026-09-23). The freeze expires with its TTL; the unlock stage keeps it too.
+        print("snapshot freeze kept: the parquet stage did not finish (it expires on its own)", flush=True); raise
+    else:
         if r2_mode and not a.dry_run:
             try: lock_call("thaw", {"holder": lock_holder()}); print("snapshot writes thawed", flush=True)
             except Exception as e: print(f"WARNING: thaw failed ({e}); the freeze expires on its own", flush=True)
