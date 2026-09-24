@@ -129,6 +129,25 @@ rule on `exports/<date>/` (keep the latest two) instead of local deletes; diffs 
   either in ten seconds. Each stage keeps printing the summary lines it does today; the Workflow
   keeps them for when the line says something failed.
 
+## Status (2026-09-25): the ninth cloud night, on worker-4, 15.3 h
+
+The 2026-09-24 consolidation ran 02:02 to 17:20 UTC on the 24th, the first night on the new layout: the chain on
+worker-4's container (`container-chain.sh all` posted to `/run/worker/4`), the fan-out on objects 0, 1, 2 and 5
+(`PARQUET_WORKER_IDS`). 7,380,024 -> 7,362,561 postings (+257,188 -274,647 ~30,792), 3,608,407 distinct vectors,
+12,855 group files (84.1 GB), head flipped 16:28 UTC, feed 859f2050 (287,980 upserts, 274,647 removes), archive
+30.85 GB, ledger 11,138,384 ever. The carry fix held: 4 rows carried from 4 boards against 60,653 the night
+before, with 360 boards confirmed emptied (the filtered dark job boards now count as read).
+
+Two hand steps. Worker-5's host is slow on the bucket as well (its dark pre-scan took an hour, part 11 nearly two;
+workers 0 to 2 do the pre-scan in ten minutes): the same slice was started as a helper on idle worker-1, which
+built the seven remaining sources in 51 min while worker-5 kept its own accounting and skipped what the helper
+had published. And pass 2 died on an R2 502 during the staging write, the second night running; the write is now
+retried from a cleared prefix (50b71ae, deployed mid-run while the chain was down) and the checkpoint resume put
+the tree back at pass 2 in three minutes. Timings: parquet 8 h 06 min (workers 95 / 183 / 198 / 460 min, dedup 22
+min), diff 19 min, ledger 67 s, tree 2 h 50 min before the 502 plus 70 min from the checkpoint, estimators 2 h 36
+min, finalize 29 s, history 32 s, feed 15 min, archive 35 min, retention 30 s. Objects 0, 1, 2 and 4 sit on good
+hosts; 3 and 5 do not. Tomorrow: `PARQUET_WORKER_IDS=0,1,2,5` again unless a helper is cheaper, or three workers.
+
 ## Status (2026-09-24): the eighth cloud night, two bad hosts, 18.7 h, and four fixes
 
 The 2026-09-23 consolidation ran 04:47 to 23:29 UTC on the 23rd: 7,435,736 -> 7,319,371 postings over three days
