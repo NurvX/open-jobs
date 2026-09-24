@@ -486,17 +486,29 @@ CHUNK = 250_000
 _bucket_stage = bool(is_s3 and r2 and os.environ.get("STAGE_TO_BUCKET") == "1")
 stage = f"s3://{r2.bucket}/tmp/{TMP}.stage" if _bucket_stage else os.path.join(work, f"{TMP}.stage")
 if not _bucket_stage: shutil.rmtree(stage, ignore_errors=True)
-else:
+def _clear_stage():
     # a killed earlier attempt leaves its partial chunks under the same prefix and DuckDB refuses to write over them
+    if not _bucket_stage: return
     _old = [k for k, _, _ in r2.list(f"tmp/{TMP}.stage/")]
     for k in _old: r2.delete(k)
     _mp = r2.abort_stale_multipart(f"tmp/{TMP}.stage/")
     if _old or _mp: print(f"  cleared {len(_old)} leftover staging objects and {_mp} incomplete multipart uploads from the bucket", file=sys.stderr, flush=True)
+_clear_stage()
 # Rows carry their 6 KB vector now, and a partitioned write buffers up to 524,288 rows per open partition by default:
 # 18 partitions of that ran DuckDB out of its cap (2026-09-11). Flush every few thousand rows instead.
 con.execute("SET partitioned_write_flush_threshold=2500")  # 27 partitions x rows x ~10 KB buffered outside the cap; halved 2026-09-13
-con.execute(f"""COPY (SELECT a.pos, (a.pos // {CHUNK})::INTEGER AS chunk, j.* EXCLUDE (h) FROM ({q_rows}) j JOIN assign a USING (h))
-  TO '{stage}' (FORMAT PARQUET, PARTITION_BY (chunk), COMPRESSION ZSTD, ROW_GROUP_SIZE 5000)""")  # per-partition row-group buffers live outside DuckDB's cap
+# The staging write is one 20-minute partitioned COPY into the bucket; an R2 502 on a single chunk upload killed it
+# two nights running (2026-09-23, -24). Retry the whole write from a clean prefix; the checkpoint makes a third
+# failure a cheap resume rather than a rebuild.
+for _attempt in range(3):
+    try:
+        con.execute(f"""COPY (SELECT a.pos, (a.pos // {CHUNK})::INTEGER AS chunk, j.* EXCLUDE (h) FROM ({q_rows}) j JOIN assign a USING (h))
+          TO '{stage}' (FORMAT PARQUET, PARTITION_BY (chunk), COMPRESSION ZSTD, ROW_GROUP_SIZE 5000)""")  # per-partition row-group buffers live outside DuckDB's cap
+        break
+    except Exception as _e:
+        if _attempt == 2 or "HTTP" not in str(_e): raise
+        print(f"  staging write failed ({str(_e)[:120]}); clearing the prefix and retrying in {30 * (_attempt + 1)}s", file=sys.stderr, flush=True)
+        time.sleep(30 * (_attempt + 1)); _clear_stage()
 print(f"  staged {NT:,} rows in {(NT + CHUNK - 1) // CHUNK} chunks, {time.time()-t:.0f}s; rss {_rss():.1f} GiB", file=sys.stderr, flush=True)
 def _batches():
     for k in range((NT + CHUNK - 1) // CHUNK):
